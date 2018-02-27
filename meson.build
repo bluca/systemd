@@ -1371,12 +1371,15 @@ test_dlopen = executable(
         link_with : [libbasic],
         dependencies : [libdl])
 
-foreach tuple : [['myhostname', 'ENABLE_MYHOSTNAME'],
-                 ['systemd',    'ENABLE_NSS_SYSTEMD'],
-                 ['mymachines', 'ENABLE_MACHINED'],
-                 ['resolve',    'ENABLE_RESOLVE']]
+foreach tuple : [['myhostname', 'ENABLE_MYHOSTNAME',  ''],
+                 ['systemd',    'ENABLE_NSS_SYSTEMD', ''],
+                 ['mymachines', 'ENABLE_MACHINED',    'ENABLE_MYHOSTNAME'],
+                 ['resolve',    'ENABLE_RESOLVE',     '']]
 
         condition = tuple[1] == '' or conf.get(tuple[1]) == 1
+        if tuple[2] != '' and condition
+                condition = conf.get(tuple[2]) == 1
+        endif
         if condition
                 module = tuple[0]
 
