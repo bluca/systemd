@@ -25,4 +25,9 @@ case "$target" in
                 ;;
 esac
 
-ln -vfs --relative "$unitpath" "$dir"
+if [ -d "$dir" ]; then
+        rm -f "$dir/$unit"
+        lnr "$unitpath" "$dir/$unit"
+else
+        lnr "$unitpath" "$dir"
+fi

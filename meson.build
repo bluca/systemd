@@ -558,10 +558,6 @@ endforeach
 
 conf.set_quoted('TELINIT', get_option('telinit-path'))
 
-if run_command('ln', '--relative', '--help').returncode() != 0
-        error('ln does not support --relative (added in coreutils 8.16)')
-endif
-
 ############################################################
 
 gperf = find_program('gperf')
