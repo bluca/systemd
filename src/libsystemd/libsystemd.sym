@@ -569,6 +569,8 @@ global:
         sd_event_source_get_inotify_mask;
         sd_event_source_set_destroy_callback;
         sd_event_source_get_destroy_callback;
+        sd_event_source_get_floating;
+        sd_event_source_set_floating;
 } LIBSYSTEMD_238;
 
 LIBSYSTEMD_240 {
