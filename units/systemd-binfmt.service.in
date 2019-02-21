@@ -14,6 +14,7 @@ Documentation=https://docs.kernel.org/admin-guide/binfmt-misc.html
 Documentation=https://www.freedesktop.org/wiki/Software/systemd/APIFileSystems
 DefaultDependencies=no
 Conflicts=shutdown.target
+Wants=proc-sys-fs-binfmt_misc.automount
 After=proc-sys-fs-binfmt_misc.automount
 After=proc-sys-fs-binfmt_misc.mount
 After=local-fs.target
@@ -31,3 +32,6 @@ RemainAfterExit=yes
 ExecStart={{ROOTLIBEXECDIR}}/systemd-binfmt
 ExecStop={{ROOTLIBEXECDIR}}/systemd-binfmt --unregister
 TimeoutSec=90s
+
+[Install]
+WantedBy=sysinit.target
