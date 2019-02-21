@@ -156,7 +156,6 @@ units = [
         {
           'file' : 'proc-sys-fs-binfmt_misc.automount',
           'conditions' : ['ENABLE_BINFMT'],
-          'symlinks' : ['sysinit.target.wants/'],
         },
         {
           'file' : 'proc-sys-fs-binfmt_misc.mount',
@@ -258,7 +257,6 @@ units = [
         {
           'file' : 'systemd-binfmt.service.in',
           'conditions' : ['ENABLE_BINFMT'],
-          'symlinks' : ['sysinit.target.wants/'],
         },
         {
           'file' : 'systemd-bless-boot.service.in',

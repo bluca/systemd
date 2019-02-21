@@ -22,3 +22,6 @@ Before=shutdown.target
 
 [Automount]
 Where=/proc/sys/fs/binfmt_misc
+
+[Install]
+WantedBy=sysinit.target
