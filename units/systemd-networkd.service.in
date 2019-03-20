@@ -33,6 +33,7 @@ ProtectControlGroups=yes
 ProtectKernelModules=yes
 MemoryDenyWriteExecute=yes
 RestrictRealtime=yes
+RestrictSUIDSGID=yes
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6 AF_PACKET
 SystemCallFilter=@system-service
