@@ -147,6 +147,7 @@ All execution-related settings are available for transient units.
 ✓ MemoryDenyWriteExecute=
 ✓ RestrictNamespaces=
 ✓ RestrictRealtime=
+✓ RestrictSUIDSGID=
 ✓ RestrictAddressFamilies=
 ✓ LockPersonality=
 ✓ LimitCPU=
