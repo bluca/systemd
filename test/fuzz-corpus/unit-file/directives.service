@@ -848,6 +848,7 @@ ReserveVT=
 RestrictAddressFamilies=
 RestrictNamespaces=
 RestrictRealtime=
+RestrictSUIDSGID=
 RuntimeDirectory=
 RuntimeDirectoryMode=
 RuntimeDirectoryPreserve=
