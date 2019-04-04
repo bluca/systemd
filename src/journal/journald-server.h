@@ -16,6 +16,7 @@ typedef struct Server Server;
 #include "journald-stream.h"
 #include "list.h"
 #include "prioq.h"
+#include "varlink.h"
 
 typedef enum Storage {
         STORAGE_AUTO,
@@ -165,6 +166,8 @@ struct Server {
 
         ClientContext *my_context; /* the context of journald itself */
         ClientContext *pid1_context; /* the context of PID 1 */
+
+        VarlinkServer *varlink_server;
 };
 
 #define SERVER_MACHINE_ID(s) ((s)->machine_id_field + STRLEN("_MACHINE_ID="))
