@@ -284,13 +284,14 @@ static bool flushed_flag_is_set(void) {
         return access("/run/systemd/journal/flushed", F_OK) >= 0;
 }
 
-static int system_journal_open(Server *s, bool flush_requested) {
+static int system_journal_open(Server *s, bool flush_requested, bool relinquish_requested) {
         const char *fn;
         int r = 0;
 
         if (!s->system_journal &&
             IN_SET(s->storage, STORAGE_PERSISTENT, STORAGE_AUTO) &&
-            (flush_requested || flushed_flag_is_set())) {
+            (flush_requested || flushed_flag_is_set()) &&
+            !relinquish_requested) {
 
                 /* If in auto mode: first try to create the machine
                  * path, but not the prefix.
@@ -332,7 +333,7 @@ static int system_journal_open(Server *s, bool flush_requested) {
 
                 fn = strjoina(s->runtime_storage.path, "/system.journal");
 
-                if (s->system_journal) {
+                if (s->system_journal && !relinquish_requested) {
 
                         /* Try to open the runtime journal, but only
                          * if it already exists, so that we can flush
@@ -387,7 +388,7 @@ static JournalFile* find_journal(Server *s, uid_t uid) {
          * else that's left the journals as NULL).
          *
          * Fixes https://github.com/systemd/systemd/issues/3968 */
-        (void) system_journal_open(s, false);
+        (void) system_journal_open(s, false, false);
 
         /* We split up user logs only on /var, not on /run. If the
          * runtime file is open, we write to it exclusively, in order
@@ -965,7 +966,7 @@ int server_flush_to_var(Server *s, bool require_flag_file) {
         char ts[FORMAT_TIMESPAN_MAX];
         usec_t start;
         unsigned n = 0;
-        int r;
+        int r, k;
 
         assert(s);
 
@@ -978,7 +979,7 @@ int server_flush_to_var(Server *s, bool require_flag_file) {
         if (require_flag_file && !flushed_flag_is_set())
                 return 0;
 
-        (void) system_journal_open(s, true);
+        (void) system_journal_open(s, true, false);
 
         if (!s->system_journal)
                 return 0;
@@ -1056,7 +1057,34 @@ finish:
                                           n),
                               NULL);
 
+        k = touch("/run/systemd/journal/flushed");
+        if (k < 0)
+                log_warning_errno(k, "Failed to touch /run/systemd/journal/flushed, ignoring: %m");
+
         return r;
+}
+
+static int server_relinquish_var(Server *s) {
+        assert(s);
+
+        if (s->storage == STORAGE_NONE)
+                return 0;
+
+        if (s->runtime_journal && !s->system_journal)
+                return 0;
+
+        log_debug("Relinquishing /var...");
+
+        (void) system_journal_open(s, false, true);
+
+        s->system_journal = journal_file_close(s->system_journal);
+        ordered_hashmap_clear_with_destructor(s->user_journals, journal_file_close);
+        set_clear_with_destructor(s->deferred_closes, journal_file_close);
+
+        if (unlink("/run/systemd/journal/flushed") < 0 && errno != ENOENT)
+                log_warning_errno(errno, "Failed to unlink /run/systemd/journal/flushed, ignoring: %m");
+
+        return 0;
 }
 
 int server_process_datagram(sd_event_source *es, int fd, uint32_t revents, void *userdata) {
@@ -1181,17 +1209,11 @@ int server_process_datagram(sd_event_source *es, int fd, uint32_t revents, void 
 }
 
 static void server_full_flush(Server *s) {
-        int r;
-
         assert(s);
 
         (void) server_flush_to_var(s, false);
         server_sync(s);
         server_vacuum(s, false);
-
-        r = touch("/run/systemd/journal/flushed");
-        if (r < 0)
-                log_warning_errno(r, "Failed to touch /run/systemd/journal/flushed, ignoring: %m");
 
         server_space_usage_message(s, NULL);
 }
@@ -1201,7 +1223,7 @@ static int dispatch_sigusr1(sd_event_source *es, const struct signalfd_siginfo *
 
         assert(s);
 
-        log_info("Received request to flush runtime journal from PID " PID_FMT, si->ssi_pid);
+        log_info("Received SIGUSR1 signal from PID " PID_FMT ", as request to flush runtime journal.", si->ssi_pid);
         server_full_flush(s);
 
         return 0;
@@ -1231,7 +1253,7 @@ static int dispatch_sigusr2(sd_event_source *es, const struct signalfd_siginfo *
 
         assert(s);
 
-        log_info("Received request to rotate journal from PID " PID_FMT, si->ssi_pid);
+        log_info("Received SIGUSR2 signal from PID " PID_FMT ", as request to rotate journal.", si->ssi_pid);
         server_full_rotate(s);
 
         return 0;
@@ -1268,7 +1290,7 @@ static int dispatch_sigrtmin1(sd_event_source *es, const struct signalfd_siginfo
 
         assert(s);
 
-        log_debug("Received request to sync from PID " PID_FMT, si->ssi_pid);
+        log_debug("Received SIGRTMIN1 signal from PID " PID_FMT ", as request to sync.", si->ssi_pid );
         server_full_sync(s);
 
         return 0;
@@ -1796,6 +1818,21 @@ static int vl_method_flush_to_var(Varlink *link, JsonVariant *parameters, Varlin
         return varlink_reply(link, NULL);
 }
 
+static int vl_method_relinquish_var(Varlink *link, JsonVariant *parameters, VarlinkMethodFlags flags, void *userdata) {
+        Server *s = userdata;
+
+        assert(link);
+        assert(s);
+
+        if (json_variant_elements(parameters) > 0)
+                return varlink_error_invalid_parameter(link, parameters);
+
+        log_info("Received client request to relinquish /var access.");
+        server_relinquish_var(s);
+
+        return varlink_reply(link, NULL);
+}
+
 static int server_open_varlink(Server *s) {
         int r;
 
@@ -1809,9 +1846,10 @@ static int server_open_varlink(Server *s) {
 
         r = varlink_server_bind_method_many(
                         s->varlink_server,
-                        "io.systemd.Journal.Synchronize", vl_method_synchronize,
-                        "io.systemd.Journal.Rotate",      vl_method_rotate,
-                        "io.systemd.Journal.FlushToVar",  vl_method_flush_to_var);
+                        "io.systemd.Journal.Synchronize",   vl_method_synchronize,
+                        "io.systemd.Journal.Rotate",        vl_method_rotate,
+                        "io.systemd.Journal.FlushToVar",    vl_method_flush_to_var,
+                        "io.systemd.Journal.RelinquishVar", vl_method_relinquish_var);
         if (r < 0)
                 return r;
 
@@ -2033,7 +2071,7 @@ int server_init(Server *s) {
 
         (void) client_context_acquire_default(s);
 
-        return system_journal_open(s, false);
+        return system_journal_open(s, false, false);
 }
 
 void server_maybe_append_tags(Server *s) {
