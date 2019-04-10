@@ -23,6 +23,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "fd-util.h"
 #include "format-util.h"
 #include "macro.h"
 #include "missing.h"
@@ -131,6 +132,16 @@ int on_ac_power(void);
 static inline void *mempset(void *s, int c, size_t n) {
         memset(s, c, n);
         return (uint8_t*)s + n;
+}
+
+/* Transient errors we might get on accept() that we should ignore. As per error handling comment in
+ * the accept(2) man page. */
+static inline bool ERRNO_IS_ACCEPT_AGAIN(int r) {
+        return ERRNO_IS_DISCONNECT(r) ||
+                IN_SET(abs(r),
+                       EAGAIN,
+                       EINTR,
+                       EOPNOTSUPP);
 }
 
 static inline void _reset_errno_(int *saved_errno) {
