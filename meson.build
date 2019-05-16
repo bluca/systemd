@@ -1166,6 +1166,7 @@ foreach term : ['utmp',
                 'environment-d',
                 'binfmt',
                 'coredump',
+                'pstore',
                 'resolve',
                 'logind',
                 'hostnamed',
@@ -1347,6 +1348,7 @@ subdir('src/network')
 subdir('src/analyze')
 subdir('src/journal-remote')
 subdir('src/coredump')
+subdir('src/pstore')
 subdir('src/hostname')
 subdir('src/import')
 subdir('src/kernel-install')
@@ -2061,6 +2063,23 @@ if conf.get('ENABLE_COREDUMP') == 1
                          install_rpath : rootlibexecdir,
                          install : true)
         public_programs += [exe]
+endif
+
+if conf.get('ENABLE_PSTORE') == 1
+        executable('systemd-pstore',
+                   systemd_pstore_sources,
+                   include_directories : includes,
+                   link_with : [libshared],
+                   dependencies : [threads,
+                                   libacl,
+                                   libdw,
+                                   libxz,
+                                   liblz4],
+                   install_rpath : rootlibexecdir,
+                   install : true,
+                   install_dir : rootlibexecdir)
+
+        public_programs += exe
 endif
 
 if conf.get('ENABLE_BINFMT') == 1
@@ -2933,6 +2952,7 @@ foreach tuple : [
         ['resolve'],
         ['DNS-over-TLS'],
         ['coredump'],
+        ['pstore'],
         ['polkit'],
         ['legacy pkla',      install_polkit_pkla],
         ['efi'],

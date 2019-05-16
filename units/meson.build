@@ -134,6 +134,7 @@ in_units = [
         ['systemd-binfmt.service',               'ENABLE_BINFMT'],
         ['systemd-coredump@.service',            'ENABLE_COREDUMP'],
         ['systemd-exit.service',                 ''],
+	['systemd-pstore.service',               'ENABLE_PSTORE'],
         ['systemd-firstboot.service',            'ENABLE_FIRSTBOOT',
          'sysinit.target.wants/'],
         ['systemd-fsck-root.service',            ''],
