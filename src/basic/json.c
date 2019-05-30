@@ -1551,6 +1551,9 @@ int json_variant_format(JsonVariant *v, unsigned flags, char **ret) {
         size_t sz = 0;
         int r;
 
+        /* Returns the length of the generated string (without the terminating NUL),
+         * or negative on error. */
+
         assert_return(v, -EINVAL);
         assert_return(ret, -EINVAL);
 
@@ -1565,6 +1568,9 @@ int json_variant_format(JsonVariant *v, unsigned flags, char **ret) {
 
                 json_variant_dump(v, flags, f, NULL);
 
+                /* Add terminating 0, so that the output buffer is a valid string. */
+                fputc('\0', f);
+
                 r = fflush_and_check(f);
         }
         if (r < 0)
@@ -1572,8 +1578,8 @@ int json_variant_format(JsonVariant *v, unsigned flags, char **ret) {
 
         assert(s);
         *ret = TAKE_PTR(s);
-
-        return (int) sz;
+        assert(sz > 0);
+        return (int) sz - 1;
 }
 
 void json_variant_dump(JsonVariant *v, unsigned flags, FILE *f, const char *prefix) {
