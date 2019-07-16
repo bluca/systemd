@@ -74,6 +74,12 @@ struct sd_dhcp_lease {
         void *vendor_specific;
         size_t vendor_specific_len;
 
+        void *vendor_class_identifier;
+        size_t vendor_class_identifier_len;
+
+        void *vendor_identifying_vendor_specific;
+        size_t vendor_identifying_vendor_specific_len;
+
         char *timezone;
 
         LIST_HEAD(struct sd_dhcp_raw_option, private_options);

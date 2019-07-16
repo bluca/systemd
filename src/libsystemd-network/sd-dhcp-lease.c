@@ -250,6 +250,32 @@ int sd_dhcp_lease_get_vendor_specific(sd_dhcp_lease *lease, const void **data, s
         return 0;
 }
 
+int sd_dhcp_lease_get_vendor_class_identifier(sd_dhcp_lease *lease, const void **data, size_t *data_len) {
+        assert_return(lease, -EINVAL);
+        assert_return(data, -EINVAL);
+        assert_return(data_len, -EINVAL);
+
+        if (lease->vendor_class_identifier_len <= 0)
+                return -ENODATA;
+
+        *data = lease->vendor_class_identifier;
+        *data_len = lease->vendor_class_identifier_len;
+        return 0;
+}
+
+int sd_dhcp_lease_get_vendor_identifying_vendor_specific(sd_dhcp_lease *lease, const void **data, size_t *data_len) {
+        assert_return(lease, -EINVAL);
+        assert_return(data, -EINVAL);
+        assert_return(data_len, -EINVAL);
+
+        if (lease->vendor_identifying_vendor_specific_len <= 0)
+                return -ENODATA;
+
+        *data = lease->vendor_identifying_vendor_specific;
+        *data_len = lease->vendor_identifying_vendor_specific_len;
+        return 0;
+}
+
 static sd_dhcp_lease *dhcp_lease_free(sd_dhcp_lease *lease) {
         assert(lease);
 
@@ -661,6 +687,42 @@ int dhcp_lease_parse_options(uint8_t code, uint8_t len, const void *option, void
                 lease->vendor_specific_len = len;
                 break;
 
+        case SD_DHCP_OPTION_VENDOR_CLASS_IDENTIFIER:
+
+                if (len <= 0)
+                        lease->vendor_class_identifier = mfree(lease->vendor_class_identifier);
+                else {
+                        void *p;
+
+                        p = memdup(option, len);
+                        if (!p)
+                                return -ENOMEM;
+
+                        free(lease->vendor_class_identifier);
+                        lease->vendor_class_identifier = p;
+                }
+
+                lease->vendor_class_identifier_len = len;
+                break;
+
+        case SD_DHCP_OPTION_VI_VENDOR_SPECIFIC:
+
+                if (len <= 0)
+                        lease->vendor_identifying_vendor_specific = mfree(lease->vendor_identifying_vendor_specific);
+                else {
+                        void *p;
+
+                        p = memdup(option, len);
+                        if (!p)
+                                return -ENOMEM;
+
+                        free(lease->vendor_identifying_vendor_specific);
+                        lease->vendor_identifying_vendor_specific = p;
+                }
+
+                lease->vendor_identifying_vendor_specific_len = len;
+                break;
+
         case SD_DHCP_OPTION_PRIVATE_BASE ... SD_DHCP_OPTION_PRIVATE_LAST:
                 r = dhcp_lease_insert_private_option(lease, code, option, len);
                 if (r < 0)
@@ -944,6 +1006,30 @@ int dhcp_lease_save(sd_dhcp_lease *lease, const char *lease_file) {
                 fprintf(f, "VENDOR_SPECIFIC=%s\n", option_hex);
         }
 
+        r = sd_dhcp_lease_get_vendor_class_identifier(lease, &data, &data_len);
+        if (r >= 0) {
+                _cleanup_free_ char *option_hex = NULL;
+
+                option_hex = hexmem(data, data_len);
+                if (!option_hex) {
+                        r = -ENOMEM;
+                        goto fail;
+                }
+                fprintf(f, "VENDOR_CLASS_IDENTIFIER=%s\n", option_hex);
+        }
+
+        r = sd_dhcp_lease_get_vendor_identifying_vendor_specific(lease, &data, &data_len);
+        if (r >= 0) {
+                _cleanup_free_ char *option_hex = NULL;
+
+                option_hex = hexmem(data, data_len);
+                if (!option_hex) {
+                        r = -ENOMEM;
+                        goto fail;
+                }
+                fprintf(f, "VENDOR_IDENTIFYING_VENDOR_SPECIFIC=%s\n", option_hex);
+        }
+
         LIST_FOREACH(options, option, lease->private_options) {
                 char key[STRLEN("OPTION_000")+1];
 
@@ -988,6 +1074,8 @@ int dhcp_lease_load(sd_dhcp_lease **ret, const char *lease_file) {
                 *domains = NULL,
                 *client_id_hex = NULL,
                 *vendor_specific_hex = NULL,
+                *vendor_class_identifier_hex = NULL,
+                *vendor_identifying_vendor_specific_hex = NULL,
                 *lifetime = NULL,
                 *t1 = NULL,
                 *t2 = NULL,
@@ -1020,6 +1108,8 @@ int dhcp_lease_load(sd_dhcp_lease **ret, const char *lease_file) {
                            "CLIENTID", &client_id_hex,
                            "TIMEZONE", &lease->timezone,
                            "VENDOR_SPECIFIC", &vendor_specific_hex,
+                           "VENDOR_CLASS_IDENTIFIER", &vendor_class_identifier_hex,
+                           "VENDOR_IDENTIFYING_VENDOR_SPECIFIC", &vendor_identifying_vendor_specific_hex,
                            "LIFETIME", &lifetime,
                            "T1", &t1,
                            "T2", &t2,
@@ -1171,6 +1261,18 @@ int dhcp_lease_load(sd_dhcp_lease **ret, const char *lease_file) {
                 r = unhexmem(vendor_specific_hex, (size_t) -1, &lease->vendor_specific, &lease->vendor_specific_len);
                 if (r < 0)
                         log_debug_errno(r, "Failed to parse vendor specific data %s, ignoring: %m", vendor_specific_hex);
+        }
+
+        if (vendor_class_identifier_hex) {
+                r = unhexmem(vendor_class_identifier_hex, (size_t) -1, &lease->vendor_class_identifier, &lease->vendor_class_identifier_len);
+                if (r < 0)
+                        log_debug_errno(r, "Failed to parse vendor class identifier data %s, ignoring: %m", vendor_class_identifier_hex);
+        }
+
+        if (vendor_identifying_vendor_specific_hex) {
+                r = unhexmem(vendor_identifying_vendor_specific_hex, (size_t) -1, &lease->vendor_identifying_vendor_specific, &lease->vendor_identifying_vendor_specific_len);
+                if (r < 0)
+                        log_debug_errno(r, "Failed to parse vendor identifying vendor specific data %s, ignoring: %m", vendor_identifying_vendor_specific_hex);
         }
 
         for (i = 0; i <= SD_DHCP_OPTION_PRIVATE_LAST - SD_DHCP_OPTION_PRIVATE_BASE; i++) {

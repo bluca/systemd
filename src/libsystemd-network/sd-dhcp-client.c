@@ -83,8 +83,11 @@ struct sd_dhcp_client {
         } _packed_ client_id;
         size_t client_id_len;
         char *hostname;
+        char *vendor_specific;
         char *vendor_class_identifier;
+        char *vendor_identifying_vendor_specific;
         char **user_class;
+        char **site_local;
         uint32_t mtu;
         uint32_t xid;
         usec_t start_time;
@@ -472,6 +475,15 @@ int sd_dhcp_client_set_hostname(
         return free_and_strdup(&client->hostname, hostname);
 }
 
+int sd_dhcp_client_set_vendor_specific(
+                sd_dhcp_client *client,
+                const char *vendor_specific) {
+
+        assert_return(client, -EINVAL);
+
+        return free_and_strdup(&client->vendor_specific, vendor_specific);
+}
+
 int sd_dhcp_client_set_vendor_class_identifier(
                 sd_dhcp_client *client,
                 const char *vci) {
@@ -479,6 +491,15 @@ int sd_dhcp_client_set_vendor_class_identifier(
         assert_return(client, -EINVAL);
 
         return free_and_strdup(&client->vendor_class_identifier, vci);
+}
+
+int sd_dhcp_client_set_vendor_identifying_vendor_specific(
+                sd_dhcp_client *client,
+                const char *vivs) {
+
+        assert_return(client, -EINVAL);
+
+        return free_and_strdup(&client->vendor_identifying_vendor_specific, vivs);
 }
 
 int sd_dhcp_client_set_user_class(
@@ -525,6 +546,26 @@ int sd_dhcp_client_set_max_attempts(sd_dhcp_client *client, uint64_t max_attempt
         assert_return(client, -EINVAL);
 
         client->max_attempts = max_attempts;
+
+        return 0;
+}
+
+int sd_dhcp_client_set_site_local(
+                sd_dhcp_client *client,
+                const char* const* site_local) {
+
+        _cleanup_strv_free_ char **s = NULL;
+        char **p;
+
+        STRV_FOREACH(p, (char **) site_local)
+                if (strlen(*p) > 255)
+                        return -ENAMETOOLONG;
+
+        s = strv_copy((char **) site_local);
+        if (!s)
+                return -ENOMEM;
+
+        client->site_local = TAKE_PTR(s);
 
         return 0;
 }
@@ -825,6 +866,15 @@ static int client_send_discover(sd_dhcp_client *client) {
                         return r;
         }
 
+        if (client->vendor_specific) {
+                r = dhcp_option_append(&discover->dhcp, optlen, &optoffset, 0,
+                                       SD_DHCP_OPTION_VENDOR_SPECIFIC,
+                                       strlen(client->vendor_specific),
+                                       client->vendor_specific);
+                if (r < 0)
+                        return r;
+        }
+
         if (client->vendor_class_identifier) {
                 r = dhcp_option_append(&discover->dhcp, optlen, &optoffset, 0,
                                        SD_DHCP_OPTION_VENDOR_CLASS_IDENTIFIER,
@@ -834,11 +884,29 @@ static int client_send_discover(sd_dhcp_client *client) {
                         return r;
         }
 
+        if (client->vendor_identifying_vendor_specific) {
+                r = dhcp_option_append(&discover->dhcp, optlen, &optoffset, 0,
+                                       SD_DHCP_OPTION_VI_VENDOR_SPECIFIC,
+                                       strlen(client->vendor_identifying_vendor_specific),
+                                       client->vendor_identifying_vendor_specific);
+                if (r < 0)
+                        return r;
+        }
+
         if (client->user_class) {
                 r = dhcp_option_append(&discover->dhcp, optlen, &optoffset, 0,
                                        SD_DHCP_OPTION_USER_CLASS,
                                        strv_length(client->user_class),
                                        client->user_class);
+                if (r < 0)
+                        return r;
+        }
+
+        if (client->site_local) {
+                r = dhcp_option_append(&discover->dhcp, optlen, &optoffset, 0,
+                                       SD_DHCP_OPTION_USER_CLASS,
+                                       strv_length(client->site_local),
+                                       client->site_local);
                 if (r < 0)
                         return r;
         }
@@ -981,11 +1049,29 @@ static int client_send_request(sd_dhcp_client *client) {
                         return r;
         }
 
+        if (client->vendor_specific) {
+                r = dhcp_option_append(&request->dhcp, optlen, &optoffset, 0,
+                                       SD_DHCP_OPTION_VENDOR_SPECIFIC,
+                                       strlen(client->vendor_specific),
+                                       client->vendor_specific);
+                if (r < 0)
+                        return r;
+        }
+
         if (client->vendor_class_identifier) {
                 r = dhcp_option_append(&request->dhcp, optlen, &optoffset, 0,
                                        SD_DHCP_OPTION_VENDOR_CLASS_IDENTIFIER,
                                        strlen(client->vendor_class_identifier),
                                        client->vendor_class_identifier);
+                if (r < 0)
+                        return r;
+        }
+
+        if (client->vendor_identifying_vendor_specific) {
+                r = dhcp_option_append(&request->dhcp, optlen, &optoffset, 0,
+                                       SD_DHCP_OPTION_VI_VENDOR_SPECIFIC,
+                                       strlen(client->vendor_identifying_vendor_specific),
+                                       client->vendor_identifying_vendor_specific);
                 if (r < 0)
                         return r;
         }
@@ -1963,7 +2049,9 @@ static sd_dhcp_client *dhcp_client_free(sd_dhcp_client *client) {
 
         free(client->req_opts);
         free(client->hostname);
+        free(client->vendor_specific);
         free(client->vendor_class_identifier);
+        free(client->vendor_identifying_vendor_specific);
         client->user_class = strv_free(client->user_class);
         return mfree(client);
 }

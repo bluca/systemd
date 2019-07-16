@@ -88,6 +88,7 @@ enum {
         SD_DHCP_OPTION_NEW_TZDB_TIMEZONE           = 101,
         SD_DHCP_OPTION_DOMAIN_SEARCH_LIST          = 119,
         SD_DHCP_OPTION_CLASSLESS_STATIC_ROUTE      = 121,
+        SD_DHCP_OPTION_VI_VENDOR_SPECIFIC          = 125,
         SD_DHCP_OPTION_PRIVATE_BASE                = 224,
        /* Windows 10 option to send when Anonymize=true */
         SD_DHCP_OPTION_PRIVATE_CLASSLESS_STATIC_ROUTE = 249,

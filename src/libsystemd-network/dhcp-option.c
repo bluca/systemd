@@ -34,7 +34,8 @@ static int option_append(uint8_t options[], size_t size, size_t *offset,
                 *offset += 1;
                 break;
 
-        case SD_DHCP_OPTION_USER_CLASS: {
+        case SD_DHCP_OPTION_USER_CLASS:
+        case SD_DHCP_OPTION_PRIVATE_BASE ... SD_DHCP_OPTION_PRIVATE_LAST: {
                 size_t len = 0;
                 char **s;
 
