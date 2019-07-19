@@ -26,6 +26,7 @@
 #JoinControllers=cpu,cpuacct net_cls,net_prio
 #RuntimeWatchdogSec=0
 #ShutdownWatchdogSec=10min
+#KExecWatchdogSec=0
 #CapabilityBoundingSet=
 #NoNewPrivileges=no
 #SystemCallArchitectures=
