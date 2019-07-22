@@ -319,7 +319,7 @@ static void process_dmesg_files(PStoreList *list) {
 static int list_files(PStoreList *list, const char *sourcepath) {
         _cleanup_(closedirp) DIR *dirp = NULL;
         struct dirent *de;
-        int r = 0;
+        int r;
 
         dirp = opendir(sourcepath);
         if (!dirp)
@@ -338,7 +338,7 @@ static int list_files(PStoreList *list, const char *sourcepath) {
                 /* Now read contents of pstore file */
                 r = read_full_file(ifd_path, &buf, &buf_size);
                 if (r < 0) {
-                        log_warning_errno(r, "Failed to read file %s: %m", ifd_path);
+                        log_warning_errno(r, "Failed to read file %s, skipping: %m", ifd_path);
                         continue;
                 }
 
@@ -354,7 +354,7 @@ static int list_files(PStoreList *list, const char *sourcepath) {
                 };
         }
 
-        return r;
+        return 0;
 }
 
 int main(int argc, char *argv[]) {
