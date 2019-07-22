@@ -180,8 +180,6 @@ static int write_dmesg(const char *dmesg, size_t size, const char *id) {
         if (isempty(dmesg) || size == 0)
                 return 0;
 
-        /* log_info("Record ID %s", id); */
-
         if (id)
                 ofd_path = path_join(arg_archivedir, id, "dmesg.txt");
         else
