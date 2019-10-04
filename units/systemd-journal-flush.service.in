@@ -14,7 +14,11 @@ DefaultDependencies=no
 Requires=systemd-journald.service
 After=systemd-journald.service
 After=systemd-remount-fs.service
-Before=systemd-user-sessions.service systemd-tmpfiles-setup.service
+Before=systemd-user-sessions.service
+# systemd-tmpfiles-setup.service is needed by networkd, so if /var/log/journal is
+# on a networked volume there's a cycle. Break it by running tmpfiles.d manually
+# for /var/log/journal
+Before=systemd-tmpfiles-setup-var-log-journal.service
 RequiresMountsFor=/var/log/journal
 
 [Service]
