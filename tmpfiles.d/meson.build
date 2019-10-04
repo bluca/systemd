@@ -24,6 +24,7 @@ foreach pair : tmpfiles
 endforeach
 
 m4_files = [['etc.conf',             ''],
+            ['journal-var.conf',     ''],
             ['systemd.conf',         ''],
             ['var.conf',             ''],
            ]

@@ -204,6 +204,8 @@ in_units = [
          'sysinit.target.wants/'],
         ['systemd-tmpfiles-setup.service',       'ENABLE_TMPFILES',
          'sysinit.target.wants/'],
+        ['systemd-tmpfiles-setup-var-log-journal.service', 'ENABLE_TMPFILES',
+         'sysinit.target.wants/'],
         ['systemd-udev-settle.service',          ''],
         ['systemd-udev-trigger.service',         '',
          'sysinit.target.wants/'],
