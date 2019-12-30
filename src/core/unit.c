@@ -4527,11 +4527,11 @@ int unit_patch_contexts(Unit *u) {
                     cc->device_policy == CGROUP_DEVICE_POLICY_AUTO)
                         cc->device_policy = CGROUP_DEVICE_POLICY_CLOSED;
 
-                if (ec->root_image &&
+                if ((ec->root_image || ec->n_mount_paths > 0) &&
                     (cc->device_policy != CGROUP_DEVICE_POLICY_AUTO || cc->device_allow)) {
                         const char *p;
 
-                        /* When RootImage= is specified, the following devices are touched. */
+                        /* When RootImage= or MountPaths= is specified, the following devices are touched. */
                         FOREACH_STRING(p, "/dev/loop-control", "/dev/mapper/control") {
                                 r = cgroup_add_device_allow(cc, p, "rw");
                                 if (r < 0)
