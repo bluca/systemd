@@ -168,6 +168,7 @@ manpages = [
    'sd_bus_open_system_remote',
    'sd_bus_open_user'],
   ''],
+ ['sd_bus_enqueue_for_read', '3', [], ''],
  ['sd_bus_error',
   '3',
   ['SD_BUS_ERROR_MAKE_CONST',
