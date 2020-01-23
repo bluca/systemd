@@ -447,11 +447,14 @@ static int maybe_enable_disable(sd_bus *bus, const char *path, bool enable) {
 static int maybe_start_stop(sd_bus *bus, const char *path, bool start) {
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
-        char *name = (char *)basename(path), *job = NULL;
+        char *name = (char *)path, *job = NULL;
         int r;
 
         if (!arg_now)
                 return 0;
+
+        if (arg_reload)
+                name = basename(path);
 
         r = sd_bus_call_method(
                         bus,

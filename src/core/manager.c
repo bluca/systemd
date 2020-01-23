@@ -1872,6 +1872,13 @@ int manager_load_unit_prepare(
         if (!name)
                 name = basename(path);
 
+        /* We might have been given a full path as a name by portablectl attach. */
+        if (!path && is_path(name) &&
+                        (startswith(name, "/etc/systemd/system/") || startswith(name, "/run/systemd/system/"))) {
+                path = name;
+                name = basename(path);
+        }
+
         t = unit_name_to_type(name);
 
         if (t == _UNIT_TYPE_INVALID || !unit_name_is_valid(name, UNIT_NAME_PLAIN|UNIT_NAME_INSTANCE)) {
@@ -1884,12 +1891,19 @@ int manager_load_unit_prepare(
         ret = manager_get_unit(m, name);
         if (ret) {
                 *_ret = ret;
-                return 1;
+                /* If the unit is already known (eg: referenced by a target) but
+                 * it's not loaded yet, and we were given a path where to find it, set
+                 * the state as STUB so that the unit_add_to_*_queue calls load it. */
+                if (ret->load_state == UNIT_NOT_FOUND && path &&
+                                (startswith(path, "/etc/systemd/system/") || startswith(path, "/run/systemd/system/")))
+                        ret->load_state = UNIT_STUB;
+                else
+                        return 1;
+        } else {
+                ret = cleanup_ret = unit_new(m, unit_vtable[t]->object_size);
+                if (!ret)
+                        return -ENOMEM;
         }
-
-        ret = cleanup_ret = unit_new(m, unit_vtable[t]->object_size);
-        if (!ret)
-                return -ENOMEM;
 
         if (path) {
                 ret->fragment_path = strdup(path);
