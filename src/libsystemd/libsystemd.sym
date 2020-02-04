@@ -556,7 +556,7 @@ global:
 
 LIBSYSTEMD_239 {
 global:
-        sd_bus_enqeue_for_read;
+        sd_bus_enqueue_for_read;
         sd_bus_open_with_description;
         sd_bus_open_user_with_description;
         sd_bus_open_system_with_description;
