@@ -211,6 +211,34 @@ static int check_good_user(sd_bus_message *m, uid_t good_user) {
         return sender_uid == good_user;
 }
 
+#if ENABLE_POLKIT
+static int bus_message_append_strv_key_value(
+                sd_bus_message *m,
+                const char **l) {
+
+        const char **k, **v;
+        int r;
+
+        assert(m);
+
+        r = sd_bus_message_open_container(m, 'a', "{ss}");
+        if (r < 0)
+                return r;
+
+        STRV_FOREACH_PAIR(k, v, l) {
+                r = sd_bus_message_append(m, "{ss}", *k, *v);
+                if (r < 0)
+                        return r;
+        }
+
+        r = sd_bus_message_close_container(m);
+        if (r < 0)
+                return r;
+
+        return r;
+}
+#endif
+
 int bus_test_polkit(
                 sd_bus_message *call,
                 int capability,
@@ -218,7 +246,7 @@ int bus_test_polkit(
                 const char **details,
                 uid_t good_user,
                 bool *_challenge,
-                sd_bus_error *e) {
+                sd_bus_error *ret_error) {
 
         int r;
 
@@ -241,7 +269,7 @@ int bus_test_polkit(
                 _cleanup_(sd_bus_message_unrefp) sd_bus_message *request = NULL;
                 _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
                 int authorized = false, challenge = false;
-                const char *sender, **k, **v;
+                const char *sender;
 
                 sender = sd_bus_message_get_sender(call);
                 if (!sender)
@@ -265,17 +293,7 @@ int bus_test_polkit(
                 if (r < 0)
                         return r;
 
-                r = sd_bus_message_open_container(request, 'a', "{ss}");
-                if (r < 0)
-                        return r;
-
-                STRV_FOREACH_PAIR(k, v, details) {
-                        r = sd_bus_message_append(request, "{ss}", *k, *v);
-                        if (r < 0)
-                                return r;
-                }
-
-                r = sd_bus_message_close_container(request);
+                r = bus_message_append_strv_key_value(request, details);
                 if (r < 0)
                         return r;
 
@@ -283,11 +301,11 @@ int bus_test_polkit(
                 if (r < 0)
                         return r;
 
-                r = sd_bus_call(call->bus, request, 0, e, &reply);
+                r = sd_bus_call(call->bus, request, 0, ret_error, &reply);
                 if (r < 0) {
                         /* Treat no PK available as access denied */
-                        if (sd_bus_error_has_name(e, SD_BUS_ERROR_SERVICE_UNKNOWN)) {
-                                sd_bus_error_free(e);
+                        if (sd_bus_error_has_name(ret_error, SD_BUS_ERROR_SERVICE_UNKNOWN)) {
+                                sd_bus_error_free(ret_error);
                                 return -EACCES;
                         }
 
@@ -318,6 +336,9 @@ int bus_test_polkit(
 #if ENABLE_POLKIT
 
 typedef struct AsyncPolkitQuery {
+        char *action;
+        char **details;
+
         sd_bus_message *request, *reply;
         sd_bus_slot *slot;
 
@@ -336,6 +357,9 @@ static void async_polkit_query_free(AsyncPolkitQuery *q) {
 
         sd_bus_message_unref(q->request);
         sd_bus_message_unref(q->reply);
+
+        free(q->action);
+        strv_free(q->details);
 
         sd_event_source_disable_unref(q->defer_event_source);
         free(q);
@@ -415,7 +439,7 @@ int bus_verify_polkit_async(
                 bool interactive,
                 uid_t good_user,
                 Hashmap **registry,
-                sd_bus_error *error) {
+                sd_bus_error *ret_error) {
 
 #if ENABLE_POLKIT
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *pk = NULL;
@@ -438,22 +462,28 @@ int bus_verify_polkit_async(
         if (q) {
                 int authorized, challenge;
 
-                /* This is the second invocation of this function, and
-                 * there's already a response from polkit, let's
-                 * process it */
+                /* This is the second invocation of this function, and there's already a response from
+                 * polkit, let's process it */
                 assert(q->reply);
+
+                /* If the operation we want to authenticate changed between the first and the second time,
+                 * let's not use this authentication, it might be out of date as the object and context we
+                 * operate on might have changed. */
+                if (!streq(q->action, action) ||
+                    !strv_equal(q->details, (char**) details))
+                        return -ESTALE;
 
                 if (sd_bus_message_is_method_error(q->reply, NULL)) {
                         const sd_bus_error *e;
 
-                        /* Copy error from polkit reply */
                         e = sd_bus_message_get_error(q->reply);
-                        sd_bus_error_copy(error, e);
 
                         /* Treat no PK available as access denied */
                         if (sd_bus_error_has_name(e, SD_BUS_ERROR_SERVICE_UNKNOWN))
                                 return -EACCES;
 
+                        /* Copy error from polkit reply */
+                        sd_bus_error_copy(ret_error, e);
                         return -sd_bus_error_get_errno(e);
                 }
 
@@ -468,7 +498,7 @@ int bus_verify_polkit_async(
                         return 1;
 
                 if (challenge)
-                        return sd_bus_error_set(error, SD_BUS_ERROR_INTERACTIVE_AUTHORIZATION_REQUIRED, "Interactive authentication required.");
+                        return sd_bus_error_set(ret_error, SD_BUS_ERROR_INTERACTIVE_AUTHORIZATION_REQUIRED, "Interactive authentication required.");
 
                 return -EACCES;
         }
@@ -513,17 +543,7 @@ int bus_verify_polkit_async(
         if (r < 0)
                 return r;
 
-        r = sd_bus_message_open_container(pk, 'a', "{ss}");
-        if (r < 0)
-                return r;
-
-        STRV_FOREACH_PAIR(k, v, details) {
-                r = sd_bus_message_append(pk, "{ss}", *k, *v);
-                if (r < 0)
-                        return r;
-        }
-
-        r = sd_bus_message_close_container(pk);
+        r = bus_message_append_strv_key_value(pk, details);
         if (r < 0)
                 return r;
 
@@ -531,11 +551,24 @@ int bus_verify_polkit_async(
         if (r < 0)
                 return r;
 
-        q = new0(AsyncPolkitQuery, 1);
+        q = new(AsyncPolkitQuery, 1);
         if (!q)
                 return -ENOMEM;
 
-        q->request = sd_bus_message_ref(call);
+        *q = (AsyncPolkitQuery) {
+                .request = sd_bus_message_ref(call),
+        };
+
+        q->action = strdup(action);
+        if(!q->action) {
+                async_polkit_query_free(q);
+                return -ENOMEM;
+        }
+        q->details = strv_copy((char**) details);
+        if(!q->details) {
+                async_polkit_query_free(q);
+                return -ENOMEM;
+        }
 
         r = hashmap_put(*registry, call, q);
         if (r < 0) {
