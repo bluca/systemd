@@ -39,6 +39,7 @@ static BusTransport arg_transport = BUS_TRANSPORT_LOCAL;
 static char *arg_host = NULL;
 static bool arg_enable = false;
 static bool arg_now = false;
+static bool arg_no_block = false;
 
 static int determine_image(const char *image, bool permit_non_existing, char **ret) {
         int r;
@@ -445,6 +446,7 @@ static int maybe_enable_disable(sd_bus *bus, const char *path, bool enable) {
 }
 
 static int maybe_start_stop(sd_bus *bus, const char *path, bool start) {
+        _cleanup_(bus_wait_for_jobs_freep) BusWaitForJobs *wait = NULL;
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         char *name = (char *)path, *job = NULL;
@@ -455,6 +457,12 @@ static int maybe_start_stop(sd_bus *bus, const char *path, bool start) {
 
         if (arg_reload)
                 name = basename(path);
+
+        if (!arg_no_block || !start) {
+                r = bus_wait_for_jobs_new(bus, &wait);
+                if (r < 0)
+                        return log_error_errno(r, "Could not watch jobs: %m");
+        }
 
         r = sd_bus_call_method(
                         bus,
@@ -475,6 +483,17 @@ static int maybe_start_stop(sd_bus *bus, const char *path, bool start) {
 
         if (!arg_quiet)
                 log_info("Queued %s to %s portable service %s.", job, start ? "start" : "stop", name);
+
+        /* Stopping must always block or the detach will fail if the unit is still running */
+        if (!arg_no_block || !start) {
+                r = bus_wait_for_jobs_add(wait, job);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to watch %s job for %s %s: %m",
+                                               job, start ? "starting" : "stopping", name);
+                r = bus_wait_for_jobs(wait, arg_quiet, NULL);
+                if (r < 0)
+                        return r;
+        }
 
         return 0;
 }
@@ -983,6 +1002,7 @@ static int help(int argc, char *argv[], void *userdata) {
                "                              after attach/detach\n"
                "     --now                    Immediately start/stop the portable service after\n"
                "                              attach/before detach\n"
+               "     --no-block               Don't block waiting for attach --now to complete\n"
                "Commands:\n"
                "  list                        List available portable service images\n"
                "  attach NAME|PATH [PREFIX...]\n"
@@ -1013,6 +1033,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_CAT,
                 ARG_ENABLE,
                 ARG_NOW,
+                ARG_NO_BLOCK,
         };
 
         static const struct option options[] = {
@@ -1031,6 +1052,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "cat",             no_argument,       NULL, ARG_CAT             },
                 { "enable",          no_argument,       NULL, ARG_ENABLE          },
                 { "now",             no_argument,       NULL, ARG_NOW             },
+                { "no-block",        no_argument,       NULL, ARG_NO_BLOCK        },
                 {}
         };
 
@@ -1126,6 +1148,10 @@ static int parse_argv(int argc, char *argv[]) {
 
                 case ARG_NOW:
                         arg_now = true;
+                        break;
+
+                case ARG_NO_BLOCK:
+                        arg_no_block = true;
                         break;
 
                 case '?':
