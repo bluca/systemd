@@ -470,8 +470,12 @@ static bool job_is_runnable(Job *j) {
                  * starting or stopping something. */
 
                 HASHMAP_FOREACH_KEY(v, other, j->unit->dependencies[UNIT_AFTER], i)
-                        if (other->job)
+                        if (other->job) {
+                                log_unit_debug(j->unit,
+                                               "starting held back, waiting for: %s",
+                                               other->id);
                                 return false;
+                        }
         }
 
         /* Also, if something else is being stopped and we should
@@ -479,8 +483,12 @@ static bool job_is_runnable(Job *j) {
 
         HASHMAP_FOREACH_KEY(v, other, j->unit->dependencies[UNIT_BEFORE], i)
                 if (other->job &&
-                    IN_SET(other->job->type, JOB_STOP, JOB_RESTART))
+                    IN_SET(other->job->type, JOB_STOP, JOB_RESTART)) {
+                        log_unit_debug(j->unit,
+                                       "stopping held back, waiting for: %s",
+                                       other->id);
                         return false;
+                    }
 
         /* This means that for a service a and a service b where b
          * shall be started after a:
