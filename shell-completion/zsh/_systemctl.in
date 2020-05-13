@@ -359,7 +359,7 @@ _unit_properties() {
 
 _job_modes() {
     local -a _modes
-    _modes=(fail replace replace-irreversibly isolate ignore-dependencies ignore-requirements flush)
+    _modes=(fail replace replace-unload replace-irreversibly isolate ignore-dependencies ignore-requirements flush)
     _values -s , "${_modes[@]}"
 }
 
