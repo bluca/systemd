@@ -1648,6 +1648,7 @@ int manager_startup(Manager *m, FILE *serialization, FDSet *fds) {
 int manager_add_job(Manager *m, JobType type, Unit *unit, JobMode mode, sd_bus_error *e, Job **_ret) {
         int r;
         Transaction *tr;
+        bool unload = false;
 
         assert(m);
         assert(type < _JOB_TYPE_MAX);
@@ -1659,6 +1660,9 @@ int manager_add_job(Manager *m, JobType type, Unit *unit, JobMode mode, sd_bus_e
 
         if (mode == JOB_ISOLATE && !unit->allow_isolate)
                 return sd_bus_error_setf(e, BUS_ERROR_NO_ISOLATION, "Operation refused, unit may not be isolated.");
+
+        if (mode == JOB_REPLACE_UNLOAD && type != JOB_STOP)
+                return sd_bus_error_setf(e, SD_BUS_ERROR_INVALID_ARGS, "ReplaceUnload is only valid for stop.");
 
         log_unit_debug(unit, "Trying to enqueue job %s/%s/%s", unit->id, job_type_to_string(type), job_mode_to_string(mode));
 
@@ -1680,9 +1684,17 @@ int manager_add_job(Manager *m, JobType type, Unit *unit, JobMode mode, sd_bus_e
                         goto tr_abort;
         }
 
+        if (mode == JOB_REPLACE_UNLOAD) {
+                unload = true;
+                mode = JOB_REPLACE;
+        }
+
         r = transaction_activate(tr, m, mode, e);
         if (r < 0)
                 goto tr_abort;
+
+        if (unload)
+                unit_add_to_cleanup_queue(unit);
 
         log_unit_debug(unit,
                        "Enqueued job %s/%s as %u", unit->id,
