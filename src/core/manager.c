@@ -2203,6 +2203,7 @@ int manager_add_job_full(
 
         _cleanup_(transaction_abort_and_freep) Transaction *tr = NULL;
         int r;
+        bool unload = false;
 
         assert(m);
         assert(type >= 0 && type < _JOB_TYPE_MAX);
@@ -2221,6 +2222,9 @@ int manager_add_job_full(
 
         if (mode == JOB_RESTART_DEPENDENCIES && type != JOB_START)
                 return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "--job-mode=restart-dependencies is only valid for start.");
+
+        if (mode == JOB_REPLACE_UNLOAD && type != JOB_STOP)
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "ReplaceUnload is only valid for stop.");
 
         log_unit_debug(unit, "Trying to enqueue job %s/%s/%s", unit->id, job_type_to_string(type), job_mode_to_string(mode));
 
@@ -2256,9 +2260,17 @@ int manager_add_job_full(
                         return r;
         }
 
+        if (mode == JOB_REPLACE_UNLOAD) {
+                unload = true;
+                mode = JOB_REPLACE;
+        }
+
         r = transaction_activate(tr, m, mode, affected_jobs, error);
         if (r < 0)
                 return r;
+
+        if (unload)
+                unit_add_to_cleanup_queue(unit);
 
         log_unit_debug(unit,
                        "Enqueued job %s/%s as %u", unit->id,
