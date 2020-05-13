@@ -1619,6 +1619,7 @@ static const char* const job_mode_table[_JOB_MODE_MAX] = {
         [JOB_IGNORE_DEPENDENCIES] = "ignore-dependencies",
         [JOB_IGNORE_REQUIREMENTS] = "ignore-requirements",
         [JOB_TRIGGERING] = "triggering",
+        [JOB_REPLACE_UNLOAD] = "replace-unload",
 };
 
 DEFINE_STRING_TABLE_LOOKUP(job_mode, JobMode);
