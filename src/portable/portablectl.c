@@ -617,7 +617,7 @@ static int maybe_start_stop_restart(sd_bus *bus, const char *path, const char *m
                         method,
                         &error,
                         &reply,
-                        "ss", name, "replace");
+                        "ss", name, streq(method, "StopUnit") && !arg_reload ? "replace-unload" : "replace");
         if (r < 0)
                 return log_error_errno(r, "Failed to call %s on the portable service %s: %s",
                                        method,
