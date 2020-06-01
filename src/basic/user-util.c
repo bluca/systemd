@@ -73,6 +73,46 @@ int parse_uid(const char *s, uid_t *ret) {
         return 0;
 }
 
+int parse_uid_range(const char *s, uid_t *ret_lower, uid_t *ret_upper) {
+        _cleanup_free_ char *word = NULL;
+        uid_t l, u;
+        int r;
+
+        assert(s);
+        assert(ret_lower);
+        assert(ret_upper);
+
+        r = extract_first_word(&s, &word, "-", EXTRACT_DONT_COALESCE_SEPARATORS);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return -EINVAL;
+
+        r = parse_uid(word, &l);
+        if (r < 0)
+                return r;
+
+        /* Check for the upper bound and extract it if needed */
+        if (!s)
+                /* Single number with no dash. */
+                u = l;
+        else if (!*s)
+                /* Trailing dash is an error. */
+                return -EINVAL;
+        else {
+                r = parse_uid(s, &u);
+                if (r < 0)
+                        return r;
+
+                if (l > u)
+                        return -EINVAL;
+        }
+
+        *ret_lower = l;
+        *ret_upper = u;
+        return 0;
+}
+
 char* getlogname_malloc(void) {
         uid_t uid;
         struct stat st;
