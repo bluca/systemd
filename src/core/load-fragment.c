@@ -5,12 +5,12 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/fs.h>
 #include <linux/oom.h>
 #if HAVE_SECCOMP
 #include <seccomp.h>
 #endif
 #include <sched.h>
-#include <sys/mount.h>
 #include <sys/resource.h>
 
 #include "sd-messages.h"
@@ -38,7 +38,6 @@
 #include "ioprio.h"
 #include "ip-protocol-list.h"
 #include "journal-util.h"
-#include "libmount-util.h"
 #include "limits-util.h"
 #include "load-fragment.h"
 #include "log.h"
@@ -4585,7 +4584,7 @@ int config_parse_bind_paths(
         return 0;
 }
 
-int config_parse_mount_paths(
+int config_parse_mount_images(
                 const char *unit,
                 const char *filename,
                 unsigned line,
@@ -4609,19 +4608,18 @@ int config_parse_mount_paths(
 
         if (isempty(rvalue)) {
                 /* Empty assignment resets the list */
-                mount_path_free_many(c->mount_paths, c->n_mount_paths);
-                c->mount_paths = NULL;
-                c->n_mount_paths = 0;
+                mount_images_free_many(c->mount_images, c->n_mount_images);
+                c->mount_images = NULL;
+                c->n_mount_images = 0;
                 return 0;
         }
 
         p = rvalue;
         for (;;) {
-                _cleanup_free_ char *source = NULL, *destination = NULL, *mount_flags = NULL;
+                _cleanup_free_ char *source = NULL, *destination = NULL;
                 _cleanup_free_ char *sresolved = NULL, *dresolved = NULL;
-                char *s = NULL, *d = NULL, *f = NULL;
+                char *s = NULL, *d = NULL;
                 bool permissive = false;
-                unsigned long flags = 0;
 
                 r = extract_first_word(&p, &source, ":" WHITESPACE, EXTRACT_UNQUOTE|EXTRACT_DONT_COALESCE_SEPARATORS);
                 if (r == 0)
@@ -4675,37 +4673,16 @@ int config_parse_mount_paths(
                                 continue;
 
                         d = dresolved;
-
-                        /* Optionally, there's also a short mount flag string specified */
-                        if (p && p[-1] == ':') {
-                                r = extract_first_word(&p, &mount_flags, NULL, EXTRACT_UNQUOTE);
-                                if (r == -ENOMEM)
-                                        return log_oom();
-                                if (r < 0) {
-                                        log_syntax(unit, LOG_ERR, filename, line, r, "Failed to parse %s: %s", lvalue, rvalue);
-                                        return 0;
-                                }
-                                r = mnt_optstr_get_flags(mount_flags, &flags, mnt_get_builtin_optmap(MNT_LINUX_MAP));
-                                if (r < 0) {
-                                        log_syntax(unit, LOG_ERR, filename, line, r,
-                                                   "Invalid mount flags in \"%s\", ignoring: %m", mount_flags);
-                                        continue;
-                                }
-                                f = mount_flags;
-                        }
                 } else {
                         log_syntax(unit, LOG_ERR, filename, line, 0, "Missing destination in %s, ignoring: %s", lvalue, rvalue);
                         continue;
                 }
 
-                r = mount_path_add(&c->mount_paths, &c->n_mount_paths,
-                                   &(MountPath) {
-                                           .source = TAKE_PTR(s),
-                                           .destination = TAKE_PTR(d),
-                                           .mount_flags = TAKE_PTR(f),
-                                           .read_only = flags & MS_RDONLY,
-                                           .nosuid = flags & MS_NOSUID,
-                                           .permissive = permissive,
+                r = mount_images_add(&c->mount_images, &c->n_mount_images,
+                                   &(MountEntry) {
+                                           .source_const = s,
+                                           .path_const = d,
+                                           .ignore = permissive,
                                    });
                 if (r < 0)
                         return log_oom();

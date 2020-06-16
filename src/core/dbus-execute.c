@@ -25,7 +25,6 @@
 #include "io-util.h"
 #include "ioprio.h"
 #include "journal-util.h"
-#include "libmount-util.h"
 #include "mountpoint-util.h"
 #include "namespace.h"
 #include "parse-util.h"
@@ -785,7 +784,7 @@ static int property_get_root_hash_sig(
         return sd_bus_message_append_array(reply, 'y', c->root_hash_sig, c->root_hash_sig_size);
 }
 
-static int property_get_mount_paths(
+static int property_get_mount_images(
                 sd_bus *bus,
                 const char *path,
                 const char *interface,
@@ -803,17 +802,16 @@ static int property_get_mount_paths(
         assert(property);
         assert(reply);
 
-        r = sd_bus_message_open_container(reply, 'a', "(ssbs)");
+        r = sd_bus_message_open_container(reply, 'a', "(ssb)");
         if (r < 0)
                 return r;
 
-        for (i = 0; i < c->n_mount_paths; i++) {
+        for (i = 0; i < c->n_mount_images; i++) {
                 r = sd_bus_message_append(
-                                reply, "(ssbs)",
-                                c->mount_paths[i].source,
-                                c->mount_paths[i].destination,
-                                c->mount_paths[i].permissive,
-                                c->mount_paths[i].mount_flags);
+                                reply, "(ssb)",
+                                mount_entry_source(&c->mount_images[i]),
+                                mount_entry_path(&c->mount_images[i]),
+                                c->mount_images[i].ignore);
                 if (r < 0)
                         return r;
         }
@@ -868,7 +866,7 @@ const sd_bus_vtable bus_exec_vtable[] = {
         SD_BUS_PROPERTY("RootHashSignature", "ay", property_get_root_hash_sig, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("RootHashSignaturePath", "s", NULL, offsetof(ExecContext, root_hash_sig_path), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("RootVerity", "s", NULL, offsetof(ExecContext, root_verity), SD_BUS_VTABLE_PROPERTY_CONST),
-        SD_BUS_PROPERTY("MountPaths", "a(ssbs)", property_get_mount_paths, 0, SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("MountImages", "a(ssb)", property_get_mount_images, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("OOMScoreAdjust", "i", property_get_oom_score_adjust, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("CoredumpFilter", "t", property_get_coredump_filter, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("Nice", "i", property_get_nice, 0, SD_BUS_VTABLE_PROPERTY_CONST),
@@ -2846,46 +2844,38 @@ int bus_exec_context_set_transient_property(
                         return 1;
                 }
 
-        } else if (streq(name, "MountPaths")) {
-                char *source, *destination, *mount_flags;
+        } else if (streq(name, "MountImages")) {
+                char *source, *destination;
                 int permissive;
                 bool empty = true;
-                unsigned long mflags = 0;
 
-                r = sd_bus_message_enter_container(message, 'a', "(ssbs)");
+                r = sd_bus_message_enter_container(message, 'a', "(ssb)");
                 if (r < 0)
                         return r;
 
-                while ((r = sd_bus_message_read(message, "(ssbs)", &source, &destination, &permissive, &mount_flags)) > 0) {
+                while ((r = sd_bus_message_read(message, "(ssb)", &source, &destination, &permissive)) > 0) {
                         if (!path_is_absolute(source))
                                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Source path %s is not absolute.", source);
                         if (!path_is_absolute(destination))
                                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Destination path %s is not absolute.", destination);
-                        r = mnt_optstr_get_flags(mount_flags, &mflags, mnt_get_builtin_optmap(MNT_LINUX_MAP));
-                        if (r < 0)
-                                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid mount flags %s.", mount_flags);
 
                         if (!UNIT_WRITE_FLAGS_NOOP(flags)) {
-                                r = mount_path_add(&c->mount_paths, &c->n_mount_paths,
-                                                   &(MountPath) {
-                                                           .source = source,
-                                                           .destination = destination,
-                                                           .mount_flags = mount_flags,
-                                                           .read_only = mflags & MS_RDONLY,
-                                                           .nosuid = mflags & MS_NOSUID,
-                                                           .permissive = permissive,
+                                r = mount_images_add(&c->mount_images, &c->n_mount_images,
+                                                   &(MountEntry) {
+                                                           .source_const = source,
+                                                           .path_const = destination,
+                                                           .ignore = permissive,
                                                    });
                                 if (r < 0)
                                         return r;
 
                                 unit_write_settingf(
                                                 u, flags|UNIT_ESCAPE_SPECIFIERS, name,
-                                                "%s=%s%s:%s:%s",
+                                                "%s=%s%s:%s",
                                                 name,
                                                 permissive ? "-" : "",
                                                 source,
-                                                destination,
-                                                mount_flags);
+                                                destination);
                         }
 
                         empty = false;
@@ -2898,9 +2888,9 @@ int bus_exec_context_set_transient_property(
                         return r;
 
                 if (empty) {
-                        mount_path_free_many(c->mount_paths, c->n_mount_paths);
-                        c->mount_paths = NULL;
-                        c->n_mount_paths = 0;
+                        mount_images_free_many(c->mount_images, c->n_mount_images);
+                        c->mount_images = NULL;
+                        c->n_mount_images = 0;
 
                         unit_write_settingf(u, flags, name, "%s=", name);
                 }

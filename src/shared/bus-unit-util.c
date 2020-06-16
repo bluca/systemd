@@ -1455,7 +1455,7 @@ static int bus_append_execute_property(sd_bus_message *m, const char *field, con
                 return bus_append_byte_array(m, field, roothash_sig_decoded, roothash_sig_decoded_size);
         }
 
-        if (streq(field, "MountPaths")) {
+        if (streq(field, "MountImages")) {
                 const char *p = eq;
 
                 r = sd_bus_message_open_container(m, SD_BUS_TYPE_STRUCT, "sv");
@@ -1466,19 +1466,18 @@ static int bus_append_execute_property(sd_bus_message *m, const char *field, con
                 if (r < 0)
                         return bus_log_create_error(r);
 
-                r = sd_bus_message_open_container(m, 'v', "a(ssbs)");
+                r = sd_bus_message_open_container(m, 'v', "a(ssb)");
                 if (r < 0)
                         return bus_log_create_error(r);
 
-                r = sd_bus_message_open_container(m, 'a', "(ssbs)");
+                r = sd_bus_message_open_container(m, 'a', "(ssb)");
                 if (r < 0)
                         return bus_log_create_error(r);
 
                 for (;;) {
-                        _cleanup_free_ char *source = NULL, *destination = NULL, *mount_flags = NULL;
-                        char *s = NULL, *d = NULL, *f = NULL;
+                        _cleanup_free_ char *source = NULL, *destination = NULL;
+                        char *s = NULL, *d = NULL;
                         bool permissive = false;
-                        unsigned long flags = 0;
 
                         r = extract_first_word(&p, &source, ":" WHITESPACE, EXTRACT_UNQUOTE|EXTRACT_DONT_COALESCE_SEPARATORS);
                         if (r < 0)
@@ -1502,23 +1501,10 @@ static int bus_append_execute_property(sd_bus_message *m, const char *field, con
                                                                eq);
 
                                 d = destination;
-
-                                if (p && p[-1] == ':') {
-                                        r = extract_first_word(&p, &mount_flags, NULL, EXTRACT_UNQUOTE);
-                                        if (r < 0)
-                                                return log_error_errno(r, "Failed to parse argument: %m");
-
-                                        r = mnt_optstr_get_flags(mount_flags, &flags, mnt_get_builtin_optmap(MNT_LINUX_MAP));
-                                        if (r < 0) {
-                                                log_error_errno(r, "Failed to resolve flags in \"%s\", ignoring: %m", mount_flags);
-                                                continue;
-                                        }
-                                        f = mount_flags;
-                                }
                         } else
                                 d = s;
 
-                        r = sd_bus_message_append(m, "(ssbs)", s, d, permissive, f);
+                        r = sd_bus_message_append(m, "(ssb)", s, d, permissive);
                         if (r < 0)
                                 return bus_log_create_error(r);
                 }

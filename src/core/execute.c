@@ -1919,7 +1919,7 @@ static bool exec_needs_mount_namespace(
         if (context->root_image)
                 return true;
 
-        if (context->n_mount_paths > 0)
+        if (context->n_mount_images > 0)
                 return true;
 
         if (!strv_isempty(context->read_write_paths) ||
@@ -2571,7 +2571,7 @@ static bool insist_on_sandboxing(
         if (root_dir || root_image)
                 return true;
 
-        if (context->n_mount_paths > 0)
+        if (context->n_mount_images > 0)
                 return true;
 
         if (context->dynamic_user)
@@ -2659,8 +2659,8 @@ static int apply_mount_namespace(
                 log_unit_debug(u, "shared mount propagation hidden by other fs namespacing unit settings: ignoring");
 
         r = setup_namespace(root_dir, root_image,
-                            context->mount_paths,
-                            context->n_mount_paths,
+                            context->mount_images,
+                            context->n_mount_images,
                             &ns_info, context->read_write_paths,
                             needs_sandboxing ? context->read_only_paths : NULL,
                             needs_sandboxing ? context->inaccessible_paths : NULL,
@@ -4214,9 +4214,9 @@ void exec_context_done(ExecContext *c) {
         c->root_hash_sig_size = 0;
         c->root_hash_sig_path = mfree(c->root_hash_sig_path);
         c->root_verity = mfree(c->root_verity);
-        mount_path_free_many(c->mount_paths, c->n_mount_paths);
-        c->mount_paths = NULL;
-        c->n_mount_paths = 0;
+        mount_images_free_many(c->mount_images, c->n_mount_images);
+        c->mount_images = NULL;
+        c->n_mount_images = 0;
         c->tty_path = mfree(c->tty_path);
         c->syslog_identifier = mfree(c->syslog_identifier);
         c->user = mfree(c->user);
@@ -5018,13 +5018,12 @@ void exec_context_dump(const ExecContext *c, FILE* f, const char *prefix) {
                         fprintf(f, "%d\n", c->syscall_errno);
         }
 
-        if (c->n_mount_paths > 0)
-                for (i = 0; i < c->n_mount_paths; i++)
-                        fprintf(f, "%sMountPaths: %s%s:%s:%s\n", prefix,
-                                c->mount_paths[i].permissive ? "-": "",
-                                c->mount_paths[i].source,
-                                c->mount_paths[i].destination,
-                                c->mount_paths[i].mount_flags);
+        if (c->n_mount_images > 0)
+                for (i = 0; i < c->n_mount_images; i++)
+                        fprintf(f, "%sMountImages: %s%s:%s\n", prefix,
+                                c->mount_images[i].ignore ? "-": "",
+                                mount_entry_source(&c->mount_images[i]),
+                                mount_entry_path(&c->mount_images[i]));
 }
 
 bool exec_context_maintains_privileges(const ExecContext *c) {

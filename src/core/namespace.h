@@ -70,20 +70,50 @@ struct TemporaryFileSystem {
         char *options;
 };
 
-typedef struct MountPath {
-        char *source;
-        char *destination;
-        char *mount_flags;
-        bool read_only:1;
-        bool nosuid:1;
-        bool permissive:1;
-} MountPath;
+typedef enum MountMode {
+        /* This is ordered by priority! */
+        INACCESSIBLE,
+        MOUNT_IMAGES,
+        BIND_MOUNT,
+        BIND_MOUNT_RECURSIVE,
+        PRIVATE_TMP,
+        PRIVATE_DEV,
+        BIND_DEV,
+        EMPTY_DIR,
+        SYSFS,
+        PROCFS,
+        READONLY,
+        READWRITE,
+        TMPFS,
+        READWRITE_IMPLICIT, /* Should have the lowest priority. */
+        _MOUNT_MODE_MAX,
+} MountMode;
+
+typedef struct MountEntry {
+        const char *path_const;   /* Memory allocated on stack or static */
+        MountMode mode:5;
+        bool ignore:1;            /* Ignore if path does not exist? */
+        bool has_prefix:1;        /* Already is prefixed by the root dir? */
+        bool read_only:1;         /* Shall this mount point be read-only? */
+        bool nosuid:1;            /* Shall set MS_NOSUID on the mount itself */
+        bool applied:1;           /* Already applied */
+        char *path_malloc;        /* Use this instead of 'path_const' if we had to allocate memory */
+        const char *source_const; /* The source path, for bind mounts or path images */
+        char *source_malloc;
+        const char *options_const;/* Mount options for tmpfs */
+        char *options_malloc;
+        unsigned long flags;      /* Mount flags used by EMPTY_DIR and TMPFS. Do not include MS_RDONLY here, but please use read_only. */
+        unsigned n_followed;
+} MountEntry;
+
+const char *mount_entry_path(const MountEntry *p);
+const char *mount_entry_source(const MountEntry *p);
 
 int setup_namespace(
                 const char *root_directory,
                 const char *root_image,
-                const MountPath *mount_paths,
-                size_t n_mount_paths,
+                const MountEntry *mount_images,
+                size_t n_mount_images,
                 const NamespaceInfo *ns_info,
                 char **read_write_paths,
                 char **read_only_paths,
@@ -130,8 +160,8 @@ void temporary_filesystem_free_many(TemporaryFileSystem *t, size_t n);
 int temporary_filesystem_add(TemporaryFileSystem **t, size_t *n,
                              const char *path, const char *options);
 
-void mount_path_free_many(MountPath *p, size_t n);
-int mount_path_add(MountPath **p, size_t *n, const MountPath *item);
+void mount_images_free_many(MountEntry *p, size_t n);
+int mount_images_add(MountEntry **p, size_t *n, const MountEntry *item);
 
 const char* namespace_type_to_string(NamespaceType t) _const_;
 NamespaceType namespace_type_from_string(const char *s) _pure_;
