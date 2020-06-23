@@ -72,6 +72,15 @@
       </varlistentry>
 
       <varlistentry>
+        <term><varname>roothashsig=</varname></term>
+
+        <listitem><para>Takes a path to a PKCS7 formatted signature of the <option>roothash=</option> option.
+        If libcryptsetup (minimum version 2.3.0) and the kernel (minimum version 5.4 with CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG
+        enabled) support it, the dm-verity volume will only be opened if the signature of the root hash hex string is valid
+        and done by a public key present in the kernel keyring.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
         <term><varname>systemd.verity_root_data=</varname></term>
         <term><varname>systemd.verity_root_hash=</varname></term>
 

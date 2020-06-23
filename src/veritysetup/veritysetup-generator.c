@@ -27,15 +27,17 @@
 static const char *arg_dest = NULL;
 static bool arg_enabled = true;
 static char *arg_root_hash = NULL;
+static char *arg_root_hash_sig = NULL;
 static char *arg_data_what = NULL;
 static char *arg_hash_what = NULL;
 
 STATIC_DESTRUCTOR_REGISTER(arg_root_hash, freep);
+STATIC_DESTRUCTOR_REGISTER(arg_root_hash_sig, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_data_what, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_hash_what, freep);
 
 static int create_device(void) {
-        _cleanup_free_ char *u = NULL, *v = NULL, *d = NULL, *e = NULL, *u_escaped = NULL, *v_escaped = NULL, *root_hash_escaped = NULL;
+        _cleanup_free_ char *u = NULL, *v = NULL, *d = NULL, *e = NULL, *u_escaped = NULL, *v_escaped = NULL, *root_hash_escaped = NULL, *root_hash_sig_escaped = NULL;
         _cleanup_fclose_ FILE *f = NULL;
         const char *to;
         int r;
@@ -84,6 +86,12 @@ static int create_device(void) {
         if (!root_hash_escaped)
                 return log_oom();
 
+        if (arg_root_hash_sig) {
+                root_hash_sig_escaped = specifier_escape(arg_root_hash_sig);
+                if (!root_hash_sig_escaped)
+                        return log_oom();
+        }
+
         r = generator_open_unit_file(arg_dest, NULL, SYSTEMD_VERITYSETUP_SERVICE, &f);
         if (r < 0)
                 return r;
@@ -102,11 +110,11 @@ static int create_device(void) {
                 "\n[Service]\n"
                 "Type=oneshot\n"
                 "RemainAfterExit=yes\n"
-                "ExecStart=" ROOTLIBEXECDIR "/systemd-veritysetup attach root '%s' '%s' '%s'\n"
+                "ExecStart=" ROOTLIBEXECDIR "/systemd-veritysetup attach root '%s' '%s' '%s' '%s'\n"
                 "ExecStop=" ROOTLIBEXECDIR "/systemd-veritysetup detach root\n",
                 d, e,
                 d, e,
-                u_escaped, v_escaped, root_hash_escaped);
+                u_escaped, v_escaped, root_hash_escaped, root_hash_sig_escaped);
 
         r = fflush_and_check(f);
         if (r < 0)
@@ -158,6 +166,15 @@ static int parse_proc_cmdline_item(const char *key, const char *value, void *dat
                 r = free_and_strdup(&arg_hash_what, value);
                 if (r < 0)
                         return log_oom();
+        } else if (proc_cmdline_key_streq(key, "roothashsig")) {
+
+                if (proc_cmdline_value_missing(key, value))
+                        return 0;
+
+                r = free_and_strdup(&arg_root_hash_sig, value);
+                if (r < 0)
+                        return log_oom();
+
         }
 
         return 0;
