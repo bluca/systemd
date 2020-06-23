@@ -44,6 +44,7 @@ static const char *arg_host = NULL;
 static bool arg_enable = false;
 static bool arg_now = false;
 static bool arg_no_block = false;
+static const char* arg_root_image = NULL;
 
 static int determine_image(const char *image, bool permit_non_existing, char **ret) {
         int r;
@@ -631,13 +632,19 @@ static int attach_image(int argc, char *argv[], void *userdata) {
 
         (void) polkit_agent_open_if_enabled(arg_transport, arg_ask_password);
 
-        r = bus_message_new_method_call(bus, &m, bus_portable_mgr, "AttachImage");
+        r = bus_message_new_method_call(bus, &m, bus_portable_mgr, arg_root_image ? "AttachImageWithRoot" : "AttachImage");
         if (r < 0)
                 return bus_log_create_error(r);
 
         r = sd_bus_message_append(m, "s", image);
         if (r < 0)
                 return bus_log_create_error(r);
+
+        if (arg_root_image) {
+                r = sd_bus_message_append(m, "s", arg_root_image);
+                if (r < 0)
+                        return bus_log_create_error(r);
+        }
 
         r = sd_bus_message_append_strv(m, matches);
         if (r < 0)
@@ -975,6 +982,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_ENABLE,
                 ARG_NOW,
                 ARG_NO_BLOCK,
+                ARG_ROOT,
         };
 
         static const struct option options[] = {
@@ -994,6 +1002,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "enable",          no_argument,       NULL, ARG_ENABLE          },
                 { "now",             no_argument,       NULL, ARG_NOW             },
                 { "no-block",        no_argument,       NULL, ARG_NO_BLOCK        },
+                { "root",            required_argument, NULL, ARG_ROOT            },
                 {}
         };
 
@@ -1090,6 +1099,10 @@ static int parse_argv(int argc, char *argv[]) {
 
                 case ARG_NO_BLOCK:
                         arg_no_block = true;
+                        break;
+
+                case ARG_ROOT:
+                        arg_root_image = optarg;
                         break;
 
                 case '?':

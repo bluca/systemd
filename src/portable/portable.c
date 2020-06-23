@@ -221,6 +221,7 @@ static int extract_now(
                 const char *where,
                 char **matches,
                 int socket_fd,
+                bool split_image,
                 PortableMetadata **ret_os_release,
                 Hashmap **ret_unit_files) {
 
@@ -270,6 +271,9 @@ static int extract_now(
         r = lookup_paths_init(&paths, UNIT_FILE_SYSTEM, LOOKUP_PATHS_SPLIT_USR, where);
         if (r < 0)
                 return log_debug_errno(r, "Failed to acquire lookup paths: %m");
+
+        if (split_image)
+                strv_consume(&paths.search_path, strjoin(where, "/"));
 
         unit_files = hashmap_new(&portable_metadata_hash_ops);
         if (!unit_files)
@@ -342,6 +346,7 @@ static int extract_now(
 
 static int portable_extract_by_path(
                 const char *path,
+                bool validate_image,
                 char **matches,
                 PortableMetadata **ret_os_release,
                 Hashmap **ret_unit_files,
@@ -359,7 +364,7 @@ static int portable_extract_by_path(
                 /* We can't turn this into a loop-back block device, and this returns EISDIR? Then this is a directory
                  * tree and not a raw device. It's easy then. */
 
-                r = extract_now(path, matches, -1, &os_release, &unit_files);
+                r = extract_now(path, matches, -1, false, &os_release, &unit_files);
                 if (r < 0)
                         return r;
 
@@ -403,13 +408,13 @@ static int portable_extract_by_path(
                 if (r == 0) {
                         seq[0] = safe_close(seq[0]);
 
-                        r = dissected_image_mount(m, tmpdir, UID_INVALID, DISSECT_IMAGE_READ_ONLY|DISSECT_IMAGE_VALIDATE_OS);
+                        r = dissected_image_mount(m, tmpdir, UID_INVALID, DISSECT_IMAGE_READ_ONLY|(validate_image ? DISSECT_IMAGE_VALIDATE_OS : 0));
                         if (r < 0) {
                                 log_debug_errno(r, "Failed to mount dissected image: %m");
                                 goto child_finish;
                         }
 
-                        r = extract_now(tmpdir, matches, seq[1], NULL, NULL);
+                        r = extract_now(tmpdir, matches, seq[1], !validate_image, NULL, NULL);
 
                 child_finish:
                         _exit(r < 0 ? EXIT_FAILURE : EXIT_SUCCESS);
@@ -470,10 +475,10 @@ static int portable_extract_by_path(
                 child = 0;
         }
 
-        if (!os_release)
+        if (validate_image && !os_release)
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Image '%s' lacks os-release data, refusing.", path);
 
-        if (hashmap_isempty(unit_files))
+        if (!validate_image && hashmap_isempty(unit_files))
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Couldn't find any matching unit files in image '%s', refusing.", path);
 
         if (ret_unit_files)
@@ -501,7 +506,7 @@ int portable_extract(
         if (r < 0)
                 return r;
 
-        return portable_extract_by_path(image->path, matches, ret_os_release, ret_unit_files, error);
+        return portable_extract_by_path(image->path, true, matches, ret_os_release, ret_unit_files, error);
 }
 
 static int unit_file_is_active(
@@ -672,6 +677,7 @@ void portable_changes_free(PortableChange *changes, size_t n_changes) {
 }
 
 static int install_chroot_dropin(
+                const char *root_image_path,
                 const char *image_path,
                 ImageType type,
                 const PortableMetadata *m,
@@ -695,16 +701,31 @@ static int install_chroot_dropin(
         if (!text)
                 return -ENOMEM;
 
-        if (endswith(m->name, ".service"))
+        if (endswith(m->name, ".service")) {
                 if (!strextend(&text,
                                "\n"
                                "[Service]\n",
-                               IN_SET(type, IMAGE_DIRECTORY, IMAGE_SUBVOLUME) ? "RootDirectory=" : "RootImage=", image_path, "\n"
                                "Environment=PORTABLE=", basename(image_path), "\n"
                                "LogExtraFields=PORTABLE=", basename(image_path), "\n",
                                NULL))
 
                         return -ENOMEM;
+                if (root_image_path) {
+                        if (!strextend(&text,
+                                "RootImage=", root_image_path, "\n"
+                                "MountImages=", image_path, ":/var/opt/msft/ap/app/%N\n"
+                                "WorkingDirectory=/var/opt/msft/ap/app/%N\n"
+                                "TemporaryFileSystem=/var\n",
+                                NULL))
+
+                                return -ENOMEM;
+                } else
+                        if (!strextend(&text,
+                                IN_SET(type, IMAGE_DIRECTORY, IMAGE_SUBVOLUME) ? "RootDirectory=" : "RootImage=", image_path, "\n",
+                                NULL))
+
+                                return -ENOMEM;
+        }
 
         r = write_string_file(dropin, text, WRITE_STRING_FILE_CREATE|WRITE_STRING_FILE_ATOMIC);
         if (r < 0)
@@ -818,6 +839,7 @@ static int attach_unit_file(
                 const LookupPaths *paths,
                 const char *image_path,
                 ImageType type,
+                const char *root_image_path,
                 const PortableMetadata *m,
                 const char *profile,
                 PortableFlags flags,
@@ -858,7 +880,7 @@ static int attach_unit_file(
          * is reloaded while we are creating things here: as long as only the drop-ins exist the unit doesn't exist at
          * all for PID 1. */
 
-        r = install_chroot_dropin(image_path, type, m, dropin_dir, &chroot_dropin, changes, n_changes);
+        r = install_chroot_dropin(root_image_path, image_path, type, m, dropin_dir, &chroot_dropin, changes, n_changes);
         if (r < 0)
                 return r;
 
@@ -966,6 +988,7 @@ int portable_attach(
                 const char *name_or_path,
                 char **matches,
                 const char *profile,
+                const char *root_image_path,
                 PortableFlags flags,
                 PortableChange **changes,
                 size_t *n_changes,
@@ -973,7 +996,7 @@ int portable_attach(
 
         _cleanup_hashmap_free_ Hashmap *unit_files = NULL;
         _cleanup_(lookup_paths_free) LookupPaths paths = {};
-        _cleanup_(image_unrefp) Image *image = NULL;
+        _cleanup_(image_unrefp) Image *image = NULL, *root_image = NULL;
         PortableMetadata *item;
         Iterator iterator;
         int r;
@@ -984,7 +1007,13 @@ int portable_attach(
         if (r < 0)
                 return r;
 
-        r = portable_extract_by_path(image->path, matches, NULL, &unit_files, error);
+        if (root_image_path) {
+                r = image_find_harder(IMAGE_PORTABLE, root_image_path, &root_image);
+                if (r < 0)
+                        return r;
+        }
+
+        r = portable_extract_by_path(image->path, root_image_path ? false : true, matches, NULL, &unit_files, error);
         if (r < 0)
                 return r;
 
@@ -1007,7 +1036,8 @@ int portable_attach(
         }
 
         HASHMAP_FOREACH(item, unit_files, iterator) {
-                r = attach_unit_file(&paths, image->path, image->type, item, profile, flags, changes, n_changes);
+                r = attach_unit_file(&paths, image->path, image->type, root_image ? root_image->path : NULL,
+                                     item, profile, flags, changes, n_changes);
                 if (r < 0)
                         return r;
         }

@@ -223,7 +223,7 @@ int bus_image_common_attach(
         _cleanup_strv_free_ char **matches = NULL;
         PortableChange *changes = NULL;
         PortableFlags flags = 0;
-        const char *profile, *copy_mode;
+        const char *profile, *copy_mode, *root_image = NULL;
         size_t n_changes = 0;
         int runtime, r;
 
@@ -233,6 +233,13 @@ int bus_image_common_attach(
         if (!m) {
                 assert(image);
                 m = image->userdata;
+        }
+
+        if (sd_bus_message_is_method_call(message, NULL, "AttachImageWithRoot") ||
+                        sd_bus_message_is_method_call(message, NULL, "AttachWithRoot")) {
+                r = sd_bus_message_read(message, "s", &root_image);
+                if (r < 0)
+                        return r;
         }
 
         r = sd_bus_message_read_strv(message, &matches);
@@ -271,6 +278,7 @@ int bus_image_common_attach(
                         image->path,
                         matches,
                         profile,
+                        root_image,
                         flags,
                         &changes,
                         &n_changes,
@@ -530,6 +538,7 @@ const sd_bus_vtable image_vtable[] = {
         SD_BUS_METHOD("GetMetadata", "as", "saya{say}", bus_image_method_get_metadata, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("GetState", NULL, "s", bus_image_method_get_state, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("Attach", "assbs", "a(sss)", bus_image_method_attach, SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD("AttachWithRoot", "sassbs", "a(sss)", bus_image_method_attach, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("Detach", "b", "a(sss)", bus_image_method_detach, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("Remove", NULL, NULL, bus_image_method_remove, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("MarkReadOnly", "b", NULL, bus_image_method_mark_read_only, SD_BUS_VTABLE_UNPRIVILEGED),
