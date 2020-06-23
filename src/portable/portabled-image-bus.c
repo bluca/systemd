@@ -73,20 +73,22 @@ static int bus_image_method_get_os_release(sd_bus_message *message, void *userda
 static int append_fd(sd_bus_message *m, PortableMetadata *d) {
         _cleanup_fclose_ FILE *f = NULL;
         _cleanup_free_ char *buf = NULL;
-        size_t n;
+        size_t n = 0;
         int r;
 
         assert(m);
-        assert(d);
-        assert(d->fd >= 0);
 
-        f = take_fdopen(&d->fd, "r");
-        if (!f)
-                return -errno;
+        if (d) {
+                assert(d->fd >= 0);
 
-        r = read_full_stream(f, &buf, &n);
-        if (r < 0)
-                return r;
+                f = take_fdopen(&d->fd, "r");
+                if (!f)
+                        return -errno;
+
+                r = read_full_stream(f, &buf, &n);
+                if (r < 0)
+                        return r;
+        }
 
         return sd_bus_message_append_array(m, 'y', buf, n);
 }
@@ -221,7 +223,7 @@ int bus_image_common_attach(
                 Image *image,
                 sd_bus_error *error) {
 
-        _cleanup_strv_free_ char **matches = NULL;
+        _cleanup_strv_free_ char **matches = NULL, **extra_images = NULL;
         PortableChange *changes = NULL;
         PortableFlags flags = 0;
         const char *profile, *copy_mode;
@@ -234,6 +236,13 @@ int bus_image_common_attach(
         if (!m) {
                 assert(image);
                 m = image->userdata;
+        }
+
+        if (sd_bus_message_is_method_call(message, NULL, "AttachImageWithExtras") ||
+                        sd_bus_message_is_method_call(message, NULL, "AttachWithExtras")) {
+                r = sd_bus_message_read_strv(message, &extra_images);
+                if (r < 0)
+                        return r;
         }
 
         r = sd_bus_message_read_strv(message, &matches);
@@ -272,6 +281,7 @@ int bus_image_common_attach(
                         image->path,
                         matches,
                         profile,
+                        extra_images,
                         flags,
                         &changes,
                         &n_changes,
@@ -531,6 +541,7 @@ const sd_bus_vtable image_vtable[] = {
         SD_BUS_METHOD("GetMetadata", "as", "saya{say}", bus_image_method_get_metadata, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("GetState", NULL, "s", bus_image_method_get_state, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("Attach", "assbs", "a(sss)", bus_image_method_attach, SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD("AttachWithExtras", "asassbs", "a(sss)", bus_image_method_attach, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("Detach", "b", "a(sss)", bus_image_method_detach, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("Remove", NULL, NULL, bus_image_method_remove, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("MarkReadOnly", "b", NULL, bus_image_method_mark_read_only, SD_BUS_VTABLE_UNPRIVILEGED),

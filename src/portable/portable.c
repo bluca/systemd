@@ -341,6 +341,7 @@ static int extract_now(
 
 static int portable_extract_by_path(
                 const char *path,
+                bool extract_os_release,
                 char **matches,
                 PortableMetadata **ret_os_release,
                 Hashmap **ret_unit_files,
@@ -400,9 +401,15 @@ static int portable_extract_by_path(
                 if (r < 0)
                         return r;
                 if (r == 0) {
+                        DissectImageFlags flags = DISSECT_IMAGE_READ_ONLY;
+                        /* When the portable image is layered, the image with units will not
+                         * have a full filesystem, so no os-release - it will be in the root layer */
+                        if (extract_os_release)
+                                flags |= DISSECT_IMAGE_VALIDATE_OS;
+
                         seq[0] = safe_close(seq[0]);
 
-                        r = dissected_image_mount(m, tmpdir, UID_INVALID, DISSECT_IMAGE_READ_ONLY|DISSECT_IMAGE_VALIDATE_OS);
+                        r = dissected_image_mount(m, tmpdir, UID_INVALID, flags);
                         if (r < 0) {
                                 log_debug_errno(r, "Failed to mount dissected image: %m");
                                 goto child_finish;
@@ -443,10 +450,9 @@ static int portable_extract_by_path(
                         if (!add)
                                 return -ENOMEM;
                         fd = -1;
-
-                        /* Note that we do not initialize 'add->source' here, as the source path is not usable here as
-                         * it refers to a path only valid in the short-living namespaced child process we forked
-                         * here. */
+                        add->source = strdup(path);
+                        if (!add->source)
+                                return -ENOMEM;
 
                         if (PORTABLE_METADATA_IS_UNIT(add)) {
                                 r = hashmap_put(unit_files, add->name, add);
@@ -469,10 +475,10 @@ static int portable_extract_by_path(
                 child = 0;
         }
 
-        if (!os_release)
+        if (extract_os_release && !os_release)
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Image '%s' lacks os-release data, refusing.", path);
 
-        if (hashmap_isempty(unit_files))
+        if (!extract_os_release && hashmap_isempty(unit_files))
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Couldn't find any matching unit files in image '%s', refusing.", path);
 
         if (ret_unit_files)
@@ -500,7 +506,7 @@ int portable_extract(
         if (r < 0)
                 return r;
 
-        return portable_extract_by_path(image->path, matches, ret_os_release, ret_unit_files, error);
+        return portable_extract_by_path(image->path, false, matches, ret_os_release, ret_unit_files, error);
 }
 
 static int unit_file_is_active(
@@ -690,12 +696,12 @@ static int install_chroot_dropin(
         if (!dropin)
                 return -ENOMEM;
 
-        text = strjoin(PORTABLE_DROPIN_MARKER_BEGIN, image_path, PORTABLE_DROPIN_MARKER_END "\n");
+        text = strjoin(PORTABLE_DROPIN_MARKER_BEGIN, m->source ?: image_path, PORTABLE_DROPIN_MARKER_END "\n");
         if (!text)
                 return -ENOMEM;
 
         if (endswith(m->name, ".service")) {
-                const char *os_release_source;
+                const char *os_release_source, *root_type = IN_SET(type, IMAGE_DIRECTORY, IMAGE_SUBVOLUME) ? "RootDirectory=" : "RootImage=";
 
                 if (access("/etc/os-release", F_OK) < 0) {
                         if (errno != ENOENT)
@@ -708,13 +714,17 @@ static int install_chroot_dropin(
                 if (!strextend(&text,
                                "\n"
                                "[Service]\n",
-                               IN_SET(type, IMAGE_DIRECTORY, IMAGE_SUBVOLUME) ? "RootDirectory=" : "RootImage=", image_path, "\n"
+                               root_type, image_path, "\n"
                                "Environment=PORTABLE=", basename(image_path), "\n"
                                "BindReadOnlyPaths=", os_release_source, ":/run/host/os-release\n"
                                "LogExtraFields=PORTABLE=", basename(image_path), "\n",
                                NULL))
 
                         return -ENOMEM;
+
+                if (m->source)
+                        if (!strextend(&text, "MountImages=", m->source, "\n", NULL))
+                                return -ENOMEM;
         }
 
         r = write_string_file(dropin, text, WRITE_STRING_FILE_CREATE|WRITE_STRING_FILE_ATOMIC);
@@ -943,32 +953,51 @@ static int image_symlink(
 }
 
 static int install_image_symlink(
-                const char *image_path,
+                const Image *image,
                 PortableFlags flags,
                 PortableChange **changes,
                 size_t *n_changes) {
 
-        _cleanup_free_ char *sl = NULL;
         int r;
 
-        assert(image_path);
+        assert(image);
 
         /* If the image is outside of the image search also link it into it, so that it can be found with short image
          * names and is listed among the images. */
 
-        if (image_in_search_path(IMAGE_PORTABLE, image_path))
-                return 0;
+        for (size_t j = 0; j < image->n_extra_images; ++j) {
+                _cleanup_free_ char *sl = NULL;
 
-        r = image_symlink(image_path, flags, &sl);
-        if (r < 0)
-                return log_debug_errno(r, "Failed to generate image symlink path: %m");
+                if (image_in_search_path(IMAGE_PORTABLE, image->extra_images[j]->path))
+                        continue;
 
-        (void) mkdir_parents(sl, 0755);
+                r = image_symlink(image->extra_images[j]->path, flags, &sl);
+                if (r < 0)
+                        return log_debug_errno(r, "Failed to generate image symlink path: %m");
 
-        if (symlink(image_path, sl) < 0)
-                return log_debug_errno(errno, "Failed to link %s %s %s: %m", image_path, special_glyph(SPECIAL_GLYPH_ARROW), sl);
+                (void) mkdir_parents(sl, 0755);
 
-        (void) portable_changes_add(changes, n_changes, PORTABLE_SYMLINK, sl, image_path);
+                if (symlink(image->extra_images[j]->path, sl) < 0)
+                        return log_debug_errno(errno, "Failed to link %s %s %s: %m", image->extra_images[j]->path, special_glyph(SPECIAL_GLYPH_ARROW), sl);
+
+                (void) portable_changes_add(changes, n_changes, PORTABLE_SYMLINK, sl, image->extra_images[j]->path);
+        }
+
+        if (!image_in_search_path(IMAGE_PORTABLE, image->path) && image->n_extra_images == 0) {
+                _cleanup_free_ char *sl = NULL;
+
+                r = image_symlink(image->path, flags, &sl);
+                if (r < 0)
+                        return log_debug_errno(r, "Failed to generate image symlink path: %m");
+
+                (void) mkdir_parents(sl, 0755);
+
+                if (symlink(image->path, sl) < 0)
+                        return log_debug_errno(errno, "Failed to link %s %s %s: %m", image->path, special_glyph(SPECIAL_GLYPH_ARROW), sl);
+
+                (void) portable_changes_add(changes, n_changes, PORTABLE_SYMLINK, sl, image->path);
+        }
+
         return 0;
 }
 
@@ -977,6 +1006,7 @@ int portable_attach(
                 const char *name_or_path,
                 char **matches,
                 const char *profile,
+                char **extra_images_paths,
                 PortableFlags flags,
                 PortableChange **changes,
                 size_t *n_changes,
@@ -986,6 +1016,8 @@ int portable_attach(
         _cleanup_(lookup_paths_free) LookupPaths paths = {};
         _cleanup_(image_unrefp) Image *image = NULL;
         PortableMetadata *item;
+        char **p;
+        const size_t n_extra_images = strv_length(extra_images_paths);
         int r;
 
         assert(name_or_path);
@@ -993,10 +1025,32 @@ int portable_attach(
         r = image_find_harder(IMAGE_PORTABLE, name_or_path, &image);
         if (r < 0)
                 return r;
+        if (n_extra_images > 0) {
+                image->extra_images = new0(Image*, n_extra_images);
+                if (!image->extra_images)
+                        return -ENOMEM;
 
-        r = portable_extract_by_path(image->path, matches, NULL, &unit_files, error);
+                STRV_FOREACH(p, extra_images_paths) {
+                        r = image_find_harder(IMAGE_PORTABLE, *p, &image->extra_images[image->n_extra_images++]);
+                        if (r < 0)
+                                return r;
+                }
+        }
+
+        r = portable_extract_by_path(image->path, true, matches, NULL, &unit_files, error);
         if (r < 0)
                 return r;
+
+        for (size_t i = 0; i < image->n_extra_images; ++i) {
+                _cleanup_hashmap_free_ Hashmap *extra_unit_files = NULL;
+
+                r = portable_extract_by_path(image->extra_images[i]->path, false, matches, NULL, &extra_unit_files, error);
+                if (r < 0)
+                        return r;
+                r = hashmap_move(unit_files, extra_unit_files);
+                if (r < 0)
+                        return r;
+        }
 
         r = lookup_paths_init(&paths, UNIT_FILE_SYSTEM, LOOKUP_PATHS_SPLIT_USR, NULL);
         if (r < 0)
@@ -1017,14 +1071,15 @@ int portable_attach(
         }
 
         HASHMAP_FOREACH(item, unit_files) {
-                r = attach_unit_file(&paths, image->path, image->type, item, profile, flags, changes, n_changes);
+                r = attach_unit_file(&paths, image->path, image->type,
+                                     item, profile, flags, changes, n_changes);
                 if (r < 0)
                         return r;
         }
 
         /* We don't care too much for the image symlink, it's just a convenience thing, it's not necessary for proper
          * operation otherwise. */
-        (void) install_image_symlink(image->path, flags, changes, n_changes);
+        (void) install_image_symlink(image, flags, changes, n_changes);
 
         return 0;
 }
