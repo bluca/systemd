@@ -73,20 +73,22 @@ static int bus_image_method_get_os_release(sd_bus_message *message, void *userda
 static int append_fd(sd_bus_message *m, PortableMetadata *d) {
         _cleanup_fclose_ FILE *f = NULL;
         _cleanup_free_ char *buf = NULL;
-        size_t n;
+        size_t n = 0;
         int r;
 
         assert(m);
-        assert(d);
-        assert(d->fd >= 0);
 
-        f = take_fdopen(&d->fd, "r");
-        if (!f)
-                return -errno;
+        if (d) {
+                assert(d->fd >= 0);
 
-        r = read_full_stream(f, &buf, &n);
-        if (r < 0)
-                return r;
+                f = take_fdopen(&d->fd, "r");
+                if (!f)
+                        return -errno;
+
+                r = read_full_stream(f, &buf, &n);
+                if (r < 0)
+                        return r;
+        }
 
         return sd_bus_message_append_array(m, 'y', buf, n);
 }
@@ -99,10 +101,12 @@ int bus_image_common_get_metadata(
                 sd_bus_error *error) {
 
         _cleanup_(portable_metadata_unrefp) PortableMetadata *os_release = NULL;
+        _cleanup_strv_free_ char **matches = NULL, **extension_images = NULL;
         _cleanup_hashmap_free_ Hashmap *unit_files = NULL;
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_free_ PortableMetadata **sorted = NULL;
-        _cleanup_strv_free_ char **matches = NULL;
+        /* Unused for now, but added to the DBUS methods for future-proofing */
+        uint64_t input_flags = 0;
         size_t i;
         int r;
 
@@ -114,9 +118,28 @@ int bus_image_common_get_metadata(
                 m = image->userdata;
         }
 
+        if (sd_bus_message_is_method_call(message, NULL, "GetImageMetadataWithExtensions") ||
+            sd_bus_message_is_method_call(message, NULL, "GetMetadataWithExtensions")) {
+                r = sd_bus_message_read_strv(message, &extension_images);
+                if (r < 0)
+                        return r;
+        }
+
         r = sd_bus_message_read_strv(message, &matches);
         if (r < 0)
                 return r;
+
+        if (sd_bus_message_is_method_call(message, NULL, "GetImageMetadataWithExtensions") ||
+            sd_bus_message_is_method_call(message, NULL, "GetMetadataWithExtensions")) {
+                r = sd_bus_message_read(message, "t", &input_flags);
+                if (r < 0)
+                        return r;
+                /* Let clients know that this version doesn't support any flags */
+                if (input_flags != 0)
+                        return sd_bus_reply_method_errorf(message, SD_BUS_ERROR_INVALID_ARGS,
+                                                          "Invalid 'flags' parameter '%" PRIu64 "'",
+                                                          input_flags);
+        }
 
         r = bus_image_acquire(m,
                               message,
@@ -134,6 +157,7 @@ int bus_image_common_get_metadata(
         r = portable_extract(
                         image->path,
                         matches,
+                        extension_images,
                         &os_release,
                         &unit_files,
                         error);
@@ -221,12 +245,12 @@ int bus_image_common_attach(
                 Image *image,
                 sd_bus_error *error) {
 
-        _cleanup_strv_free_ char **matches = NULL;
+        _cleanup_strv_free_ char **matches = NULL, **extension_images = NULL;
         PortableChange *changes = NULL;
         PortableFlags flags = 0;
         const char *profile, *copy_mode;
         size_t n_changes = 0;
-        int runtime, r;
+        int r;
 
         assert(message);
         assert(name_or_path || image);
@@ -236,13 +260,43 @@ int bus_image_common_attach(
                 m = image->userdata;
         }
 
+        if (sd_bus_message_is_method_call(message, NULL, "AttachImageWithExtensions") ||
+            sd_bus_message_is_method_call(message, NULL, "AttachWithExtensions")) {
+                r = sd_bus_message_read_strv(message, &extension_images);
+                if (r < 0)
+                        return r;
+        }
+
         r = sd_bus_message_read_strv(message, &matches);
         if (r < 0)
                 return r;
 
-        r = sd_bus_message_read(message, "sbs", &profile, &runtime, &copy_mode);
+        r = sd_bus_message_read(message, "s", &profile);
         if (r < 0)
                 return r;
+
+        if (sd_bus_message_is_method_call(message, NULL, "AttachImageWithExtensions") ||
+            sd_bus_message_is_method_call(message, NULL, "AttachWithExtensions")) {
+                uint64_t input_flags = 0;
+
+                r = sd_bus_message_read(message, "st", &copy_mode, &input_flags);
+                if (r < 0)
+                        return r;
+                if ((input_flags & ~_PORTABLE_MASK_PUBLIC) != 0)
+                        return sd_bus_reply_method_errorf(message, SD_BUS_ERROR_INVALID_ARGS,
+                                                          "Invalid 'flags' parameter '%" PRIu64 "'",
+                                                          input_flags);
+                flags |= input_flags;
+        } else {
+                int runtime;
+
+                r = sd_bus_message_read(message, "bs", &runtime, &copy_mode);
+                if (r < 0)
+                        return r;
+
+                if (runtime)
+                        flags |= PORTABLE_RUNTIME;
+        }
 
         if (streq(copy_mode, "symlink"))
                 flags |= PORTABLE_PREFER_SYMLINK;
@@ -250,9 +304,6 @@ int bus_image_common_attach(
                 flags |= PORTABLE_PREFER_COPY;
         else if (!isempty(copy_mode))
                 return sd_bus_reply_method_errorf(message, SD_BUS_ERROR_INVALID_ARGS, "Unknown copy mode '%s'", copy_mode);
-
-        if (runtime)
-                flags |= PORTABLE_RUNTIME;
 
         r = bus_image_acquire(m,
                               message,
@@ -272,6 +323,7 @@ int bus_image_common_attach(
                         image->path,
                         matches,
                         profile,
+                        extension_images,
                         flags,
                         &changes,
                         &n_changes,
@@ -295,19 +347,46 @@ static int bus_image_method_detach(
                 void *userdata,
                 sd_bus_error *error) {
 
+        _cleanup_strv_free_ char **extension_images = NULL;
         PortableChange *changes = NULL;
         Image *image = userdata;
         Manager *m = image->userdata;
+        PortableFlags flags = 0;
         size_t n_changes = 0;
-        int r, runtime;
+        int r;
 
         assert(message);
         assert(image);
         assert(m);
 
-        r = sd_bus_message_read(message, "b", &runtime);
-        if (r < 0)
-                return r;
+        if (sd_bus_message_is_method_call(message, NULL, "DetachWithExtensions")) {
+                r = sd_bus_message_read_strv(message, &extension_images);
+                if (r < 0)
+                        return r;
+        }
+
+        if (sd_bus_message_is_method_call(message, NULL, "DetachWithExtensions")) {
+                uint64_t input_flags = 0;
+
+                r = sd_bus_message_read(message, "t", &input_flags);
+                if (r < 0)
+                        return r;
+
+                if ((input_flags & ~_PORTABLE_MASK_PUBLIC) != 0)
+                        return sd_bus_reply_method_errorf(message, SD_BUS_ERROR_INVALID_ARGS,
+                                                          "Invalid 'flags' parameter '%" PRIu64 "'",
+                                                          input_flags);
+                flags |= input_flags;
+        } else {
+                int runtime;
+
+                r = sd_bus_message_read(message, "b", &runtime);
+                if (r < 0)
+                        return r;
+
+                if (runtime)
+                        flags |= PORTABLE_RUNTIME;
+        }
 
         r = bus_verify_polkit_async(
                         message,
@@ -326,7 +405,8 @@ static int bus_image_method_detach(
         r = portable_detach(
                         sd_bus_message_get_bus(message),
                         image->path,
-                        runtime ? PORTABLE_RUNTIME : 0,
+                        extension_images,
+                        flags,
                         &changes,
                         &n_changes,
                         error);
@@ -508,10 +588,10 @@ int bus_image_common_reattach(
 
         PortableChange *changes_detached = NULL, *changes_attached = NULL, *changes_gone = NULL;
         size_t n_changes_detached = 0, n_changes_attached = 0, n_changes_gone = 0;
-        _cleanup_strv_free_ char **matches = NULL;
+        _cleanup_strv_free_ char **matches = NULL, **extension_images = NULL;
         PortableFlags flags = PORTABLE_REATTACH;
         const char *profile, *copy_mode;
-        int runtime, r;
+        int r;
 
         assert(message);
         assert(name_or_path || image);
@@ -521,13 +601,44 @@ int bus_image_common_reattach(
                 m = image->userdata;
         }
 
+        if (sd_bus_message_is_method_call(message, NULL, "ReattachImageWithExtensions") ||
+            sd_bus_message_is_method_call(message, NULL, "ReattachWithExtensions")) {
+                r = sd_bus_message_read_strv(message, &extension_images);
+                if (r < 0)
+                        return r;
+        }
+
         r = sd_bus_message_read_strv(message, &matches);
         if (r < 0)
                 return r;
 
-        r = sd_bus_message_read(message, "sbs", &profile, &runtime, &copy_mode);
+        r = sd_bus_message_read(message, "s", &profile);
         if (r < 0)
                 return r;
+
+        if (sd_bus_message_is_method_call(message, NULL, "ReattachImageWithExtensions") ||
+            sd_bus_message_is_method_call(message, NULL, "ReattachWithExtensions")) {
+                uint64_t input_flags = 0;
+
+                r = sd_bus_message_read(message, "st", &copy_mode, &input_flags);
+                if (r < 0)
+                        return r;
+
+                if ((input_flags & ~_PORTABLE_MASK_PUBLIC) != 0)
+                        return sd_bus_reply_method_errorf(message, SD_BUS_ERROR_INVALID_ARGS,
+                                                          "Invalid 'flags' parameter '%" PRIu64 "'",
+                                                          input_flags);
+                flags |= input_flags;
+        } else {
+                int runtime;
+
+                r = sd_bus_message_read(message, "bs", &runtime, &copy_mode);
+                if (r < 0)
+                        return r;
+
+                if (runtime)
+                        flags |= PORTABLE_RUNTIME;
+        }
 
         if (streq(copy_mode, "symlink"))
                 flags |= PORTABLE_PREFER_SYMLINK;
@@ -535,9 +646,6 @@ int bus_image_common_reattach(
                 flags |= PORTABLE_PREFER_COPY;
         else if (!isempty(copy_mode))
                 return sd_bus_reply_method_errorf(message, SD_BUS_ERROR_INVALID_ARGS, "Unknown copy mode '%s'", copy_mode);
-
-        if (runtime)
-                flags |= PORTABLE_RUNTIME;
 
         r = bus_image_acquire(m,
                               message,
@@ -555,6 +663,7 @@ int bus_image_common_reattach(
         r = portable_detach(
                         sd_bus_message_get_bus(message),
                         image->path,
+                        extension_images,
                         flags,
                         &changes_detached,
                         &n_changes_detached,
@@ -567,6 +676,7 @@ int bus_image_common_reattach(
                         image->path,
                         matches,
                         profile,
+                        extension_images,
                         flags,
                         &changes_attached,
                         &n_changes_attached,
@@ -719,6 +829,15 @@ const sd_bus_vtable image_vtable[] = {
                                               "a{say}", units),
                                 bus_image_method_get_metadata,
                                 SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_ARGS("GetMetadataWithExtensions",
+                                SD_BUS_ARGS("as", extensions,
+                                            "as", matches,
+                                            "t", flags),
+                                SD_BUS_RESULT("s", image,
+                                              "ay", os_release,
+                                              "a{say}", units),
+                                bus_image_method_get_metadata,
+                                SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD_WITH_ARGS("GetState",
                                 SD_BUS_NO_ARGS,
                                 SD_BUS_RESULT("s", state),
@@ -732,8 +851,23 @@ const sd_bus_vtable image_vtable[] = {
                                 SD_BUS_RESULT("a(sss)", changes),
                                 bus_image_method_attach,
                                 SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_ARGS("AttachWithExtensions",
+                                SD_BUS_ARGS("as", extensions,
+                                            "as", matches,
+                                            "s", profile,
+                                            "s", copy_mode,
+                                            "t", flags),
+                                SD_BUS_RESULT("a(sss)", changes),
+                                bus_image_method_attach,
+                                SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD_WITH_ARGS("Detach",
                                 SD_BUS_ARGS("b", runtime),
+                                SD_BUS_RESULT("a(sss)", changes),
+                                bus_image_method_detach,
+                                SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_ARGS("DetachWithExtensions",
+                                SD_BUS_ARGS("as", extensions,
+                                            "t", flags),
                                 SD_BUS_RESULT("a(sss)", changes),
                                 bus_image_method_detach,
                                 SD_BUS_VTABLE_UNPRIVILEGED),
@@ -742,6 +876,16 @@ const sd_bus_vtable image_vtable[] = {
                                             "s", profile,
                                             "b", runtime,
                                             "s", copy_mode),
+                                SD_BUS_RESULT("a(sss)", changes_removed,
+                                              "a(sss)", changes_updated),
+                                bus_image_method_reattach,
+                                SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_ARGS("ReattacheWithExtensions",
+                                SD_BUS_ARGS("as", extensions,
+                                            "as", matches,
+                                            "s", profile,
+                                            "s", copy_mode,
+                                            "t", flags),
                                 SD_BUS_RESULT("a(sss)", changes_removed,
                                               "a(sss)", changes_updated),
                                 bus_image_method_reattach,
