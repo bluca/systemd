@@ -366,6 +366,7 @@ EOF
             chmod +x $initdir/opt/script1.sh
             echo MARKER=1 > $initdir/etc/systemd/system/other_file
             mksquashfs $initdir $oldinitdir/usr/share/app1.raw
+            export initdir=$oldinitdir
         )
     fi
 }

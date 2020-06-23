@@ -66,6 +66,10 @@ static Image *image_free(Image *i) {
         strv_free(i->machine_info);
         strv_free(i->os_release);
 
+        for (size_t j = 0; j < i->n_extra_images; ++j)
+                image_free(i->extra_images[j]);
+        free(i->extra_images);
+
         return mfree(i);
 }
 

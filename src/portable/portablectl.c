@@ -44,6 +44,9 @@ static const char *arg_host = NULL;
 static bool arg_enable = false;
 static bool arg_now = false;
 static bool arg_no_block = false;
+static char **arg_extra_images = NULL;
+
+STATIC_DESTRUCTOR_REGISTER(arg_extra_images, strv_freep);
 
 static int determine_image(const char *image, bool permit_non_existing, char **ret) {
         int r;
@@ -623,6 +626,7 @@ static int attach_image(int argc, char *argv[], void *userdata) {
         _cleanup_strv_free_ char **matches = NULL;
         _cleanup_free_ char *image = NULL;
         int r;
+        char **p;
 
         r = determine_image(argv[1], false, &image);
         if (r < 0)
@@ -644,13 +648,35 @@ static int attach_image(int argc, char *argv[], void *userdata) {
                                 "org.freedesktop.portable1",
                                 "/org/freedesktop/portable1",
                                 "org.freedesktop.portable1.Manager",
-                                "AttachImage");
+                                strv_isempty(arg_extra_images) ? "AttachImage" : "AttachImageWithExtras");
         if (r < 0)
                 return bus_log_create_error(r);
 
         r = sd_bus_message_append(m, "s", image);
         if (r < 0)
                 return bus_log_create_error(r);
+
+        if (!strv_isempty(arg_extra_images)) {
+                r = sd_bus_message_open_container(m, 'a', "s");
+                if (r < 0)
+                        return bus_log_create_error(r);
+
+                STRV_FOREACH(p, arg_extra_images) {
+                        _cleanup_free_ char *resolved_extra_image = NULL;
+
+                        r = determine_image(*p, false, &resolved_extra_image);
+                        if (r < 0)
+                                return r;
+
+                        r = sd_bus_message_append(m, "s", resolved_extra_image);
+                        if (r < 0)
+                                return bus_log_create_error(r);
+                }
+
+                r = sd_bus_message_close_container(m);
+                if (r < 0)
+                        return bus_log_create_error(r);
+        }
 
         r = sd_bus_message_append_strv(m, matches);
         if (r < 0)
@@ -1048,6 +1074,7 @@ static int help(int argc, char *argv[], void *userdata) {
                "     --now                    Immediately start/stop the portable service after\n"
                "                              attach/before detach\n"
                "     --no-block               Don't block waiting for attach --now to complete\n"
+               "     --extra-image=PATH       Add an extra image on top as an overlay\n"
                "\nSee the %s for details.\n"
                , program_invocation_short_name
                , ansi_highlight()
@@ -1072,6 +1099,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_ENABLE,
                 ARG_NOW,
                 ARG_NO_BLOCK,
+                ARG_EXTRA_IMAGE,
         };
 
         static const struct option options[] = {
@@ -1091,6 +1119,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "enable",          no_argument,       NULL, ARG_ENABLE          },
                 { "now",             no_argument,       NULL, ARG_NOW             },
                 { "no-block",        no_argument,       NULL, ARG_NO_BLOCK        },
+                { "extra-image",     required_argument, NULL, ARG_EXTRA_IMAGE     },
                 {}
         };
 
@@ -1188,6 +1217,20 @@ static int parse_argv(int argc, char *argv[]) {
                 case ARG_NO_BLOCK:
                         arg_no_block = true;
                         break;
+
+                case ARG_EXTRA_IMAGE: {
+                        char *extra_image = NULL;
+                        int r;
+
+                        r = parse_path_argument_and_warn(optarg, false, &extra_image);
+                        if (r < 0)
+                                return r;
+                        /* TODO: remove strv_free and allow appending once we support namespace sharing */
+                        arg_extra_images = strv_free(arg_extra_images);
+                        if (strv_consume(&arg_extra_images, extra_image) < 0)
+                                return log_oom();
+                        break;
+                }
 
                 case '?':
                         return -EINVAL;
