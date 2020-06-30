@@ -1466,16 +1466,16 @@ static int bus_append_execute_property(sd_bus_message *m, const char *field, con
                 if (r < 0)
                         return bus_log_create_error(r);
 
-                r = sd_bus_message_open_container(m, 'v', "a(ssb)");
+                r = sd_bus_message_open_container(m, 'v', "a(ssbs)");
                 if (r < 0)
                         return bus_log_create_error(r);
 
-                r = sd_bus_message_open_container(m, 'a', "(ssb)");
+                r = sd_bus_message_open_container(m, 'a', "(ssbs)");
                 if (r < 0)
                         return bus_log_create_error(r);
 
                 for (;;) {
-                        _cleanup_free_ char *source = NULL, *destination = NULL;
+                        _cleanup_free_ char *source = NULL, *destination = NULL, *mount_options = NULL;
                         char *s = NULL, *d = NULL;
                         bool permissive = false;
 
@@ -1501,10 +1501,18 @@ static int bus_append_execute_property(sd_bus_message *m, const char *field, con
                                                                eq);
 
                                 d = destination;
+
+                                if (p && p[-1] == ':') {
+                                        r = extract_first_word(&p, &mount_options, NULL, EXTRACT_UNQUOTE);
+                                        if (r == -ENOMEM)
+                                                return log_oom();
+                                        if (r < 0)
+                                                return log_error_errno(r, "Failed to parse argument: %m");
+                                }
                         } else
                                 d = s;
 
-                        r = sd_bus_message_append(m, "(ssb)", s, d, permissive);
+                        r = sd_bus_message_append(m, "(ssbs)", s, d, permissive, mount_options);
                         if (r < 0)
                                 return bus_log_create_error(r);
                 }

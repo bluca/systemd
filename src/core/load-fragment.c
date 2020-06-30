@@ -4616,7 +4616,7 @@ int config_parse_mount_images(
 
         p = rvalue;
         for (;;) {
-                _cleanup_free_ char *source = NULL, *destination = NULL;
+                _cleanup_free_ char *source = NULL, *destination = NULL, *mount_options = NULL;
                 _cleanup_free_ char *sresolved = NULL, *dresolved = NULL;
                 char *s = NULL, *d = NULL;
                 bool permissive = false;
@@ -4673,6 +4673,17 @@ int config_parse_mount_images(
                                 continue;
 
                         d = dresolved;
+
+                        /* Optionally, there's also a short mount flag string specified */
+                        if (p && p[-1] == ':') {
+                                r = extract_first_word(&p, &mount_options, NULL, EXTRACT_UNQUOTE);
+                                if (r == -ENOMEM)
+                                        return log_oom();
+                                if (r < 0) {
+                                        log_syntax(unit, LOG_ERR, filename, line, r, "Failed to parse %s: %s", lvalue, rvalue);
+                                        return 0;
+                                }
+                        }
                 } else {
                         log_syntax(unit, LOG_ERR, filename, line, 0, "Missing destination in %s, ignoring: %s", lvalue, rvalue);
                         continue;
@@ -4683,6 +4694,7 @@ int config_parse_mount_images(
                                            .source_const = s,
                                            .path_const = d,
                                            .ignore = permissive,
+                                           .options_malloc = TAKE_PTR(mount_options),
                                    });
                 if (r < 0)
                         return log_oom();

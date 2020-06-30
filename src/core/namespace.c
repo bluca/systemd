@@ -196,7 +196,7 @@ const char *mount_entry_source(const MountEntry *p) {
         return p->source_malloc ?: p->source_const;
 }
 
-static const char *mount_entry_options(const MountEntry *p) {
+const char *mount_entry_options(const MountEntry *p) {
         assert(p);
 
         return p->options_malloc ?: p->options_const;
@@ -301,6 +301,7 @@ static int append_mount_images(MountEntry **p, const MountEntry *mount_images, s
                         .mode = MOUNT_IMAGES,
                         .source_malloc = strdup(mount_entry_source(pi)),
                         .ignore = pi->ignore,
+                        .options_malloc = mount_entry_options(pi) ? strdup(mount_entry_options(pi)) : NULL,
                 };
         }
 
@@ -1748,7 +1749,7 @@ void mount_images_free_many(MountEntry *p, size_t n) {
 }
 
 int mount_images_add(MountEntry **p, size_t *n, const MountEntry *item) {
-        _cleanup_free_ char *s = NULL, *d = NULL;
+        _cleanup_free_ char *s = NULL, *d = NULL, *o = NULL;
         MountEntry *c;
 
         assert(p);
@@ -1763,6 +1764,12 @@ int mount_images_add(MountEntry **p, size_t *n, const MountEntry *item) {
         if (!d)
                 return -ENOMEM;
 
+        if (mount_entry_options(item)) {
+                o = strdup(mount_entry_options(item));
+                if (!o)
+                        return -ENOMEM;
+        }
+
         c = reallocarray(*p, *n + 1, sizeof(MountEntry));
         if (!c)
                 return -ENOMEM;
@@ -1773,6 +1780,7 @@ int mount_images_add(MountEntry **p, size_t *n, const MountEntry *item) {
                 .source_malloc = TAKE_PTR(s),
                 .path_malloc = TAKE_PTR(d),
                 .ignore = item->ignore,
+                .options_malloc = TAKE_PTR(o),
         };
 
         return 0;

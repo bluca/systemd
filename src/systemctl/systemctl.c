@@ -5408,24 +5408,26 @@ static int print_property(const char *name, const char *expected_value, sd_bus_m
                         return 1;
                 } else if (streq(name, "MountImages")) {
                         _cleanup_free_ char *paths = NULL;
-                        const char *source, *dest;
+                        const char *source, *dest, *mount_options;
                         int ignore_enoent;
 
-                        r = sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "(ssb)");
+                        r = sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "(ssbs)");
                         if (r < 0)
                                 return bus_log_parse_error(r);
 
-                        while ((r = sd_bus_message_read(m, "(ssb)", &source, &dest, &ignore_enoent)) > 0) {
+                        while ((r = sd_bus_message_read(m, "(ssbs)", &source, &dest, &ignore_enoent, &mount_options)) > 0) {
                                 _cleanup_free_ char *str = NULL;
 
                                 if (isempty(source))
                                         continue;
 
-                                if (asprintf(&str, "%s%s%s%s",
+                                if (asprintf(&str, "%s%s%s%s%s%s",
                                              ignore_enoent ? "-" : "",
                                              source,
                                              isempty(dest) ? "" : ":",
-                                             strempty(dest)) < 0)
+                                             strempty(dest),
+                                             isempty(mount_options) ? "" : ":",
+                                             strempty(mount_options)) < 0)
                                         return log_oom();
 
                                 if (!strextend_with_separator(&paths, " ", str, NULL))

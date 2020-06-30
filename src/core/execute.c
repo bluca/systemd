@@ -5018,12 +5018,13 @@ void exec_context_dump(const ExecContext *c, FILE* f, const char *prefix) {
                         fprintf(f, "%d\n", c->syscall_errno);
         }
 
-        if (c->n_mount_images > 0)
-                for (i = 0; i < c->n_mount_images; i++)
-                        fprintf(f, "%sMountImages: %s%s:%s\n", prefix,
-                                c->mount_images[i].ignore ? "-": "",
-                                mount_entry_source(&c->mount_images[i]),
-                                mount_entry_path(&c->mount_images[i]));
+        for (i = 0; i < c->n_mount_images; i++)
+                fprintf(f, "%sMountImages: %s%s:%s%s%s\n", prefix,
+                        c->mount_images[i].ignore ? "-": "",
+                        mount_entry_source(&c->mount_images[i]),
+                        mount_entry_path(&c->mount_images[i]),
+                        isempty(mount_entry_options(&c->mount_images[i])) ? "": ":",
+                        strempty(mount_entry_options(&c->mount_images[i])));
 }
 
 bool exec_context_maintains_privileges(const ExecContext *c) {

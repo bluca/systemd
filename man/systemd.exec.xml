@@ -252,14 +252,15 @@
         <term><varname>MountImages=</varname></term>
 
         <listitem><para>This setting is similar to <varname>RootImage=</varname> in that it mounts a file
-        system hierarchy from a block device node or loopback file, but the destination directory can be
-        specified as well as mount options. This option expects a whitespace separated list of mount
-        definitions. Each definition consists of a colon-separated tuple of source path and destination
-        directory. Each mount definition may be prefixed with <literal>-</literal>, in which case it will be
-        ignored when its source path does not exist. The source argument is a path to a block device node or
-        regular file. The device node or file system image file needs to follow the same rules as specified
-        for <varname>RootImage=</varname>. Any mounts created with this option are specific to the unit, and
-        are not visible in the host's mount table.</para>
+        system hierarchy from a block device node or loopback file or single filesystem image, but the
+        destination directory can be specified. This option expects a whitespace separated list of mount
+        definitions. Each definition consists of a colon-separated triple of source path, destination
+        directory and an optional mount options string. Each mount definition may be prefixed with
+        <literal>-</literal>, in which case it will be ignored when its source path does not exist. The
+        source argument is a path to a block device node or regular file. The device node or file system
+        image file needs to follow the same rules as specified for <varname>RootImage=</varname>. Any
+        mounts created with this option are specific to the unit, and are not visible in the host's mount
+        table.</para>
 
         <para>These settings may be used more than once, each usage appends to the unit's list of mount
         paths. If the empty string is assigned, the entire list of mount paths defined prior to this is

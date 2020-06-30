@@ -108,6 +108,7 @@ typedef struct MountEntry {
 
 const char *mount_entry_path(const MountEntry *p);
 const char *mount_entry_source(const MountEntry *p);
+const char *mount_entry_options(const MountEntry *p);
 
 int setup_namespace(
                 const char *root_directory,
