@@ -914,6 +914,8 @@ void transaction_add_propagate_reload_jobs(Transaction *tr, Unit *unit, Job *by,
         }
 }
 
+#include "load-fragment.h"
+
 int transaction_add_job_and_dependencies(
                 Transaction *tr,
                 JobType type,
@@ -954,6 +956,16 @@ int transaction_add_job_and_dependencies(
 
         if (type != JOB_STOP) {
                 r = bus_unit_validate_load_state(unit, e);
+                if (r < 0 && unit->load_state == UNIT_NOT_FOUND) {
+                        int rback = r;
+                        unit->load_state = UNIT_STUB;
+                        r = unit_load_fragment(unit);
+                        if (r < 0 || unit->load_state == UNIT_STUB) {
+                                unit->load_state = UNIT_NOT_FOUND;
+                                r = rback;
+                        } else
+                                r = bus_unit_validate_load_state(unit, e);
+                }
                 if (r < 0)
                         return r;
         }
