@@ -92,6 +92,8 @@ option('coredump', type : 'boolean',
        description : 'install the coredump handler')
 option('pstore', type : 'boolean',
        description : 'install the pstore archival tool')
+option('readahead', type : 'boolean',
+       description : 'install the readahead tool')
 option('logind', type : 'boolean',
        description : 'install the systemd-logind stack')
 option('hostnamed', type : 'boolean',
