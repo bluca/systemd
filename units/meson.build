@@ -151,6 +151,8 @@ units = [
         ['user.slice',                          ''],
         ['var-lib-machines.mount',              'ENABLE_MACHINED',
          'remote-fs.target.wants/ machines.target.wants/'],
+        ['systemd-readahead-done.timer',        'ENABLE_READAHEAD'],
+        ['systemd-readahead-drop.service',      'ENABLE_READAHEAD'],
 ]
 
 in_units = [
@@ -168,6 +170,9 @@ in_units = [
         ['systemd-boot-check-no-failures.service', ''],
         ['systemd-coredump@.service',            'ENABLE_COREDUMP'],
         ['systemd-pstore.service',               'ENABLE_PSTORE'],
+        ['systemd-readahead-collect.service',    'ENABLE_READAHEAD'],
+        ['systemd-readahead-replay.service',     'ENABLE_READAHEAD'],
+        ['systemd-readahead-done.service',       'ENABLE_READAHEAD'],
         ['systemd-fsck-root.service',            ''],
         ['systemd-fsck@.service',                ''],
         ['systemd-hibernate-resume@.service',    'ENABLE_HIBERNATE'],

@@ -1433,6 +1433,7 @@ foreach term : ['utmp',
                 'gshadow',
                 'idn',
                 'initrd',
+                'readahead',
                 'nss-myhostname',
                 'nss-systemd']
         have = get_option(term)
@@ -1644,6 +1645,7 @@ subdir('src/timesync')
 subdir('src/tmpfiles')
 subdir('src/vconsole')
 subdir('src/boot/efi')
+subdir('src/readahead')
 
 subdir('src/test')
 subdir('src/fuzz')
@@ -2616,6 +2618,18 @@ if conf.get('ENABLE_PSTORE') == 1
                                 libxz,
                                 liblz4,
                                 libzstd],
+                install_rpath : rootlibexecdir,
+                install : true,
+                install_dir : rootlibexecdir)
+endif
+
+if conf.get('ENABLE_READAHEAD') == 1
+        executable(
+                'systemd-readahead',
+                systemd_readahead_sources,
+                include_directories : includes,
+                link_with : [libshared,
+                     libudev_static],
                 install_rpath : rootlibexecdir,
                 install : true,
                 install_dir : rootlibexecdir)
@@ -3627,6 +3641,7 @@ foreach tuple : [
         ['DNS-over-TLS(openssl)', conf.get('DNS_OVER_TLS_USE_OPENSSL') == 1],
         ['coredump'],
         ['pstore'],
+        ['readahead'],
         ['polkit'],
         ['legacy pkla',      install_polkit_pkla],
         ['efi'],
