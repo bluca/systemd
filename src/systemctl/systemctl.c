@@ -164,6 +164,8 @@ static bool arg_now = false;
 static bool arg_jobs_before = false;
 static bool arg_jobs_after = false;
 static char **arg_clean_what = NULL;
+static bool arg_read_only = false;
+static bool arg_mkdir = false;
 
 /* This is a global cache that will be constructed on first use. */
 static Hashmap *cached_id_map = NULL;
@@ -6081,6 +6083,42 @@ static int cat(int argc, char *argv[], void *userdata) {
         return rc;
 }
 
+static int mount_bind(int argc, char *argv[], void *userdata) {
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_free_ char *n = NULL;
+        sd_bus *bus;
+        int r;
+
+        r = acquire_bus(BUS_MANAGER, &bus);
+        if (r < 0)
+                return r;
+
+        polkit_agent_open_maybe();
+
+        r = unit_name_mangle(argv[1], arg_quiet ? 0 : UNIT_NAME_MANGLE_WARN, &n);
+        if (r < 0)
+                return log_error_errno(r, "Failed to mangle unit name: %m");
+
+        r = sd_bus_call_method(
+                        bus,
+                        "org.freedesktop.systemd1",
+                        "/org/freedesktop/systemd1",
+                        "org.freedesktop.systemd1.Manager",
+                        "BindMountUnit",
+                        &error,
+                        NULL,
+                        "sssbb",
+                        n,
+                        argv[2],
+                        argv[3],
+                        arg_read_only,
+                        arg_mkdir);
+        if (r < 0)
+                return log_error_errno(r, "Failed to bind mount: %s", bus_error_message(&error, r));
+
+        return 0;
+}
+
 static int set_property(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
@@ -7937,6 +7975,8 @@ static int systemctl_help(void) {
                "  cat PATTERN...                      Show files and drop-ins of specified units\n"
                "  set-property UNIT PROPERTY=VALUE... Sets one or more properties of a unit\n"
                "  help PATTERN...|PID...              Show manual for one or more units\n"
+               "  bind UNIT PATH [PATH]               Bind mount a path from the host into a\n"
+               "                                      unit's namespace\n"
                "  reset-failed [PATTERN...]           Reset failed state for all, one, or more\n"
                "                                      units\n"
                "  list-dependencies [UNIT]            Recursively show units which are required\n"
@@ -8056,6 +8096,8 @@ static int systemctl_help(void) {
                "     --boot-loader-entry=NAME\n"
                "                         Boot into a specific boot loader entry on next boot\n"
                "     --plain             Print unit dependencies as a list instead of a tree\n"
+               "     --read-only         Create read-only bind mount\n"
+               "     --mkdir             Create directory before bind mounting, if missing\n"
                "\nSee the %2$s for details.\n"
                , program_invocation_short_name
                , link
@@ -8309,6 +8351,8 @@ static int systemctl_parse_argv(int argc, char *argv[]) {
                 ARG_MESSAGE,
                 ARG_WAIT,
                 ARG_WHAT,
+                ARG_READ_ONLY,
+                ARG_MKDIR,
         };
 
         static const struct option options[] = {
@@ -8361,6 +8405,8 @@ static int systemctl_parse_argv(int argc, char *argv[]) {
                 { "message",             required_argument, NULL, ARG_MESSAGE             },
                 { "show-transaction",    no_argument,       NULL, 'T'                     },
                 { "what",                required_argument, NULL, ARG_WHAT                },
+                { "read-only",           no_argument,       NULL, ARG_READ_ONLY           },
+                { "mkdir",               no_argument,       NULL, ARG_MKDIR               },
                 {}
         };
 
@@ -8744,6 +8790,14 @@ static int systemctl_parse_argv(int argc, char *argv[]) {
 
                         break;
                 }
+
+                case ARG_READ_ONLY:
+                        arg_read_only = true;
+                        break;
+
+                case ARG_MKDIR:
+                        arg_mkdir = true;
+                        break;
 
                 case '.':
                         /* Output an error mimicking getopt, and print a hint afterwards */
@@ -9240,6 +9294,7 @@ static int systemctl_main(int argc, char *argv[]) {
                 { "add-wants",             3,        VERB_ANY, 0,                add_dependency          },
                 { "add-requires",          3,        VERB_ANY, 0,                add_dependency          },
                 { "edit",                  2,        VERB_ANY, VERB_ONLINE_ONLY, edit                    },
+                { "bind",                  3,        4,        VERB_ONLINE_ONLY, mount_bind              },
                 {}
         };
 

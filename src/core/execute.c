@@ -2511,6 +2511,7 @@ static int apply_mount_namespace(
         _cleanup_strv_free_ char **empty_directories = NULL;
         char *tmp = NULL, *var = NULL;
         const char *root_dir = NULL, *root_image = NULL;
+        _cleanup_free_ char *incoming_dir = NULL, *propagate_dir = NULL;
         NamespaceInfo ns_info;
         bool needs_sandboxing;
         BindMount *bind_mounts = NULL;
@@ -2569,6 +2570,22 @@ static int apply_mount_namespace(
         if (context->mount_flags == MS_SHARED)
                 log_unit_debug(u, "shared mount propagation hidden by other fs namespacing unit settings: ignoring");
 
+        if (MANAGER_IS_SYSTEM(u->manager)) {
+                propagate_dir = strdup("/run/systemd/propagate");
+                if (!propagate_dir)
+                        return -ENOMEM;
+                incoming_dir = strdup("/run/host/incoming");
+                if (!incoming_dir)
+                        return -ENOMEM;
+        } else if (context->protect_home == PROTECT_HOME_NO || context->protect_home == PROTECT_HOME_TMPFS) {
+                r = xdg_user_runtime_dir(&propagate_dir, "/systemd/propagate");
+                if (r < 0)
+                        return r;
+                r = xdg_user_runtime_dir(&incoming_dir, "/host/incoming");
+                if (r < 0)
+                        return r;
+        }
+
         r = setup_namespace(root_dir, root_image, context->root_image_options,
                             &ns_info, context->read_write_paths,
                             needs_sandboxing ? context->read_only_paths : NULL,
@@ -2588,6 +2605,9 @@ static int apply_mount_namespace(
                             context->root_hash, context->root_hash_size, context->root_hash_path,
                             context->root_hash_sig, context->root_hash_sig_size, context->root_hash_sig_path,
                             context->root_verity,
+                            u->id,
+                            propagate_dir,
+                            incoming_dir,
                             DISSECT_IMAGE_DISCARD_ON_LOOP,
                             error_path);
 

@@ -28,6 +28,7 @@
         "show:Show properties of one or more units/jobs or the manager"
         "cat:Show the source unit files and drop-ins"
         "reset-failed:Reset failed state for all, one, or more units"
+        "bind:Bind mount a path from the host into a unit's namespace"
         "list-unit-files:List installed unit files"
         "enable:Enable one or more unit files"
         "disable:Disable one or more unit files"
@@ -320,6 +321,10 @@ done
     }
 
 (( $+functions[_systemctl_switch-root] )) || _systemctl_switch-root() {
+        _files
+    }
+
+(( $+functions[_systemctl_bind] )) || _systemctl_bind() {
         _files
     }
 

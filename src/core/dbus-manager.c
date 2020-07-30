@@ -14,6 +14,7 @@
 #include "dbus-job.h"
 #include "dbus-manager.h"
 #include "dbus-scope.h"
+#include "dbus-service.h"
 #include "dbus-unit.h"
 #include "dbus.h"
 #include "env-util.h"
@@ -650,6 +651,11 @@ static int method_reset_failed_unit(sd_bus_message *message, void *userdata, sd_
 static int method_set_unit_properties(sd_bus_message *message, void *userdata, sd_bus_error *error) {
         /* Only change properties on fully loaded units, and load them in order to set properties */
         return method_generic_unit_operation(message, userdata, error, bus_unit_method_set_properties, GENERIC_UNIT_LOAD|GENERIC_UNIT_VALIDATE_LOADED);
+}
+
+static int method_bind_mount_unit(sd_bus_message *message, void *userdata, sd_bus_error *error) {
+        /* Only add mounts on fully loaded units */
+        return method_generic_unit_operation(message, userdata, error, bus_service_method_bind_mount, GENERIC_UNIT_VALIDATE_LOADED);
 }
 
 static int method_ref_unit(sd_bus_message *message, void *userdata, sd_bus_error *error) {
@@ -2587,6 +2593,16 @@ const sd_bus_vtable bus_manager_vtable[] = {
         SD_BUS_METHOD("LookupDynamicUserByName", "s", "u", method_lookup_dynamic_user_by_name, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("LookupDynamicUserByUID", "u", "s", method_lookup_dynamic_user_by_uid, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("GetDynamicUsers", NULL, "a(us)", method_get_dynamic_users, SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_NAMES("BindMountUnit",
+                                 "sssbb",
+                                 SD_BUS_PARAM(name)
+                                 SD_BUS_PARAM(source)
+                                 SD_BUS_PARAM(destination)
+                                 SD_BUS_PARAM(read_only)
+                                 SD_BUS_PARAM(mkdir),
+                                 NULL,,
+                                 method_bind_mount_unit,
+                                 SD_BUS_VTABLE_UNPRIVILEGED),
 
         SD_BUS_SIGNAL("UnitNew", "so", 0),
         SD_BUS_SIGNAL("UnitRemoved", "so", 0),

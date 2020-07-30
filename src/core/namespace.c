@@ -1209,7 +1209,9 @@ static size_t namespace_calculate_mounts(
                 const char* tmp_dir,
                 const char* var_tmp_dir,
                 ProtectHome protect_home,
-                ProtectSystem protect_system) {
+                ProtectSystem protect_system,
+                bool setup_propagate,
+                bool root_is_read_only) {
 
         size_t protect_home_cnt;
         size_t protect_system_cnt =
@@ -1236,6 +1238,8 @@ static size_t namespace_calculate_mounts(
                 n_bind_mounts +
                 n_mount_images +
                 n_temporary_filesystems +
+                (setup_propagate ? 1 : 0) + /* /run/host/incoming */
+                (setup_propagate && root_is_read_only ? 1 : 0) + /* tmpfs on /run */
                 ns_info->private_dev +
                 (ns_info->protect_kernel_tunables ? ELEMENTSOF(protect_kernel_tunables_table) : 0) +
                 (ns_info->protect_kernel_modules ? ELEMENTSOF(protect_kernel_modules_table) : 0) +
@@ -1286,6 +1290,9 @@ int setup_namespace(
                 size_t root_hash_sig_size,
                 const char *root_hash_sig_path,
                 const char *root_verity,
+                const char *unit_id,
+                const char *propagate_dir,
+                const char *incoming_dir,
                 DissectImageFlags dissect_image_flags,
                 char **error_path) {
 
@@ -1296,11 +1303,14 @@ int setup_namespace(
         _cleanup_free_ char *verity_data = NULL, *hash_sig_path = NULL;
         MountEntry *m = NULL, *mounts = NULL;
         size_t n_mounts;
-        bool require_prefix = false;
+        bool require_prefix = false, root_is_read_only = false, setup_propagate = false;
         const char *root;
         int r = 0;
 
         assert(ns_info);
+
+        if (!isempty(propagate_dir) && !isempty(incoming_dir))
+                setup_propagate = true;
 
         if (mount_flags == 0)
                 mount_flags = MS_SHARED;
@@ -1329,14 +1339,16 @@ int setup_namespace(
                 if (r < 0)
                         return log_debug_errno(r, "Failed to dissect image: %m");
 
+                root_is_read_only = !dissected_image->partitions[PARTITION_ROOT].rw;
                 r = dissected_image_decrypt(dissected_image, NULL, root_hash ?: root_hash_decoded, root_hash_size, root_verity ?: verity_data, root_hash_sig_path ?: hash_sig_path, root_hash_sig, root_hash_sig_size, dissect_image_flags, &decrypted_image);
                 if (r < 0)
                         return log_debug_errno(r, "Failed to decrypt dissected image: %m");
         }
 
-        if (root_directory)
+        if (root_directory) {
                 root = root_directory;
-        else {
+                root_is_read_only = path_is_read_only_fs(root) > 0;
+        } else {
                 /* Always create the mount namespace in a temporary directory, instead of operating
                  * directly in the root. The temporary directory prevents any mounts from being
                  * potentially obscured my other mounts we already applied.
@@ -1358,12 +1370,22 @@ int setup_namespace(
                         n_temporary_filesystems,
                         n_mount_images,
                         tmp_dir, var_tmp_dir,
-                        protect_home, protect_system);
+                        protect_home, protect_system,
+                        setup_propagate,
+                        root_is_read_only);
 
         if (n_mounts > 0) {
                 m = mounts = new0(MountEntry, n_mounts);
                 if (!mounts)
                         return -ENOMEM;
+
+                /* We need at least /run to be writable, so add a tmpfs in case the user doesn't */
+                if (setup_propagate && root_is_read_only) {
+                        *(m++) = (MountEntry) {
+                                .path_const = "/run",
+                                .mode = TMPFS,
+                        };
+                }
 
                 r = append_access_mounts(&m, read_write_paths, READWRITE, require_prefix);
                 if (r < 0)
@@ -1467,6 +1489,17 @@ int setup_namespace(
                         };
                 }
 
+                /* Will be used to add bind mounts at runtime */
+                if (setup_propagate)
+                        *(m++) = (MountEntry) {
+                                .source_const = strjoina(propagate_dir, "/", unit_id),
+                                .path_const = incoming_dir,
+                                .mode = BIND_MOUNT,
+                                /* If we are reusing root or a directory, we need to ensure that /run/host doesn't already exist,
+                                * because if it does and it is read-only, mounting incoming as read-only fails with EPERM */
+                                .read_only = root_image || path_is_read_only_fs(prefix_roota(root_directory, incoming_dir)) <= 0,
+                        };
+
                 assert(mounts + n_mounts == m);
 
                 /* Prepend the root directory where that's necessary */
@@ -1490,6 +1523,10 @@ int setup_namespace(
 
                 goto finish;
         }
+
+        /* Create the source directory to allow runtime propagation of mounts */
+        if (setup_propagate)
+                (void) mkdir_p(strjoina(propagate_dir, "/", unit_id), 0600);
 
         /* Remount / as SLAVE so that nothing now mounted in the namespace
          * shows up in the parent */
@@ -1634,6 +1671,16 @@ int setup_namespace(
                 r = log_debug_errno(errno, "Failed to remount '/' with desired mount flags: %m");
                 goto finish;
         }
+
+        /* bind_mount_in_namespace() will MS_MOVE into that directory, and that's only
+         * supported for non-shared mounts. This needs to happen after remounting / or it will fail. */
+         if (setup_propagate) {
+                r = mount(NULL, incoming_dir, NULL, MS_SLAVE, NULL);
+                if (r < 0) {
+                        log_error_errno(r, "Failed to remount %s with MS_SLAVE: %m", incoming_dir);
+                        goto finish;
+                }
+         }
 
         r = 0;
 
