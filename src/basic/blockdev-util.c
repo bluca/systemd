@@ -181,3 +181,40 @@ int get_block_device_harder(const char *path, dev_t *ret) {
 
         return 1;
 }
+
+int blockdev_partscan_enabled(int fd) {
+        _cleanup_free_ char *p = NULL, *buf = NULL;
+        unsigned long long ull;
+        struct stat st;
+        int r;
+
+        /* Checks if partition scanning is correctly enabled on the block device */
+
+        if (fstat(fd, &st) < 0)
+                return -errno;
+
+        if (!S_ISBLK(st.st_mode))
+                return -ENOTBLK;
+
+        if (asprintf(&p, "/sys/dev/block/%u:%u/capability", major(st.st_rdev), minor(st.st_rdev)) < 0)
+                return -ENOMEM;
+
+        r = read_one_line_file(p, &buf);
+        if (r == -ENOENT) /* If the capability file doesn't exist then we are most likely looking at a
+                           * partition block device, not the whole block device. And that means we have no
+                           * partition scanning on for it (we do for its parent, but not for the partition
+                           * itself). */
+                return false;
+        if (r < 0)
+                return r;
+
+        r = safe_atollu_full(buf, 16, &ull);
+        if (r < 0)
+                return r;
+
+#ifndef GENHD_FL_NO_PART_SCAN
+#define GENHD_FL_NO_PART_SCAN (0x0200)
+#endif
+
+        return !FLAGS_SET(ull, GENHD_FL_NO_PART_SCAN);
+}
