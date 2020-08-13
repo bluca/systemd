@@ -96,3 +96,5 @@ static inline void umount_and_rmdir_and_free(char *p) {
         free(p);
 }
 DEFINE_TRIVIAL_CLEANUP_FUNC(char*, umount_and_rmdir_and_free);
+
+int bind_mount_in_namespace(pid_t target, const char *propagate_path, const char *incoming_path, const char *src, const char *dest, int read_only, int make_file_or_directory, char **error_path);
