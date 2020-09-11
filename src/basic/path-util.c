@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1+ */
 
 #include <errno.h>
+#include <ftw.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1135,4 +1136,103 @@ bool credential_name_valid(const char *s) {
         /* We want that credential names are both valid in filenames (since that's our primary way to pass
          * them around) and as fdnames (which is how we might want to pass them around eventually) */
         return filename_is_valid(s) && fdname_is_valid(s);
+}
+
+/* Unfortunately *ftw does not take a void *userdata pointer, so
+ * we have to use global variables to pass data... */
+struct nftw_cb_data {
+        const char *root_path;
+        char ***mounts;
+        char ***overlays;
+        size_t extra_last;
+};
+static thread_local struct nftw_cb_data *cb_data;
+
+static int nftw_cb(
+                const char *fpath,
+                const struct stat *sb,
+                int tflag,
+                struct FTW *ftwbuf) {
+
+        _cleanup_free_ char *parent_relative = NULL;
+        const char *parent, *check;
+        struct stat st;
+        int r;
+
+        if (tflag != FTW_F && tflag != FTW_D)
+                return 0;
+
+        if (isempty(&fpath[cb_data->extra_last]))
+                return 0;
+
+        /* Already added its parent */
+        if (path_startswith_strv(&fpath[cb_data->extra_last], *cb_data->mounts) != NULL)
+                return 0;
+        if (path_startswith_strv(&fpath[cb_data->extra_last], *cb_data->overlays) != NULL)
+                return 0;
+
+        check = prefix_roota(cb_data->root_path, &fpath[cb_data->extra_last]);
+        r = access(check, F_OK);
+        if (r == 0) {
+                /* file/dir exists in the root */
+                r = lstat(check, &st);
+                if (r != 0)
+                        return -errno;
+                /* One volume has a file, the other a directory - cannot handle this */
+                if (!!(tflag == FTW_F) != !!(S_ISREG(st.st_mode)))
+                        return -EINVAL;
+                /* Individual file, or directory that is empty in the root - just overmount */
+                if (tflag == FTW_F || dir_is_empty(check))
+                        return strv_extend(cb_data->mounts, &fpath[cb_data->extra_last]);
+                return 0;
+        }
+        if (errno != ENOENT)
+                return -errno;
+
+        parent_relative = dirname_malloc(&fpath[cb_data->extra_last]);
+        if (!parent_relative)
+                return -ENOMEM;
+
+        /* file/dir does not exists in the root - if the parent is empty, just overmount */
+        parent = dirname((char *)check);
+        if (dir_is_empty(parent)) {
+                return strv_consume(cb_data->mounts, TAKE_PTR(parent_relative));
+        }
+
+        /* file/dir does not exist, but parent in root has other files - overlay */
+        return strv_consume(cb_data->overlays, TAKE_PTR(parent_relative));
+}
+
+int path_compute_overlays(
+                const char *root_image,
+                const char *extra_image,
+                char ***ret_mounts_list,
+                char ***ret_overlays_list) {
+
+        _cleanup_strv_free_ char **mounts = NULL, **overlays = NULL;
+        struct nftw_cb_data data = {
+                .root_path = root_image,
+                .mounts = &mounts,
+                .overlays = &overlays,
+        };
+        int r;
+
+        assert(!isempty(root_image));
+        assert(!isempty(extra_image));
+        assert(ret_mounts_list);
+        assert(ret_overlays_list);
+
+        data.extra_last = strlen(extra_image);
+        cb_data = &data;
+
+        r = nftw(extra_image, nftw_cb, 50, FTW_PHYS|FTW_ACTIONRETVAL);
+        if (r == FTW_STOP)
+                return -ENOENT;
+        else if (r < 0)
+                return r;
+
+        *ret_mounts_list = TAKE_PTR(mounts);
+        *ret_overlays_list = TAKE_PTR(overlays);
+
+        return 0;
 }

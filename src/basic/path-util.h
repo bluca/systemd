@@ -186,3 +186,10 @@ bool path_strv_contains(char **l, const char *path);
 bool prefixed_path_strv_contains(char **l, const char *path);
 
 bool credential_name_valid(const char *s);
+
+/* Given two directory trees, compute the list of direct mounts
+ * and overlay mounts required to set up a merge of the two
+ * layers, as relative paths from the root of the extra_image.
+ * Leaf nodes (files, empty directories) are listed in the mount list,
+ * while divergent non-empty directories are listed in the overlay list. */
+int path_compute_overlays(const char *root_image, const char *extra_image, char ***ret_mounts_list, char ***ret_overlays_list);

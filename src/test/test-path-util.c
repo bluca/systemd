@@ -5,7 +5,9 @@
 
 #include "alloc-util.h"
 #include "fd-util.h"
+#include "fs-util.h"
 #include "macro.h"
+#include "mkdir.h"
 #include "mountpoint-util.h"
 #include "path-util.h"
 #include "rm-rf.h"
@@ -13,6 +15,8 @@
 #include "string-util.h"
 #include "strv.h"
 #include "tests.h"
+#include "tmpfile-util.h"
+#include "user-util.h"
 #include "util.h"
 
 static void test_print_paths(void) {
@@ -709,6 +713,67 @@ static void test_path_startswith_strv(void) {
         assert_se(streq_ptr(path_startswith_strv("/foo2/bar", STRV_MAKE("/foo/quux", "", "/zzz")), NULL));
 }
 
+static void test_overlay(void) {
+        _cleanup_(rm_rf_physical_and_freep) char *d = NULL;
+        _cleanup_strv_free_ char **mounts_list = NULL, **overlays_list = NULL;
+
+        log_info("/* %s */", __func__);
+
+        assert_se(mkdtemp_malloc(NULL, &d) >= 0);
+
+        assert_se(mkdir_p(strjoina(d, "/root/var/opt"), 0755) >= 0);
+        assert_se(mkdir_p(strjoina(d, "/root/opt"), 0755) >= 0);
+        assert_se(touch_file(strjoina(d, "/root/etc/os-release"), true,
+                                      USEC_INFINITY, UID_INVALID, GID_INVALID, MODE_INVALID) >= 0);
+        assert_se(touch_file(strjoina(d, "/root/usr/lib/os-release"), true,
+                                      USEC_INFINITY, UID_INVALID, GID_INVALID, MODE_INVALID) >= 0);
+        assert_se(touch_file(strjoina(d, "/root/usr/lib/somefile"), true,
+                                      USEC_INFINITY, UID_INVALID, GID_INVALID, MODE_INVALID) >= 0);
+        assert_se(mkdir_p(strjoina(d, "/extra/var/opt/extra"), 0755) >= 0);
+        assert_se(touch_file(strjoina(d, "/extra/etc/os-release"), true,
+                                      USEC_INFINITY, UID_INVALID, GID_INVALID, MODE_INVALID) >= 0);
+        assert_se(touch_file(strjoina(d, "/extra/usr/lib/extra_file"), true,
+                                      USEC_INFINITY, UID_INVALID, GID_INVALID, MODE_INVALID) >= 0);
+
+        assert_se(path_compute_overlays(strjoina(d, "/root"), strjoina(d, "/extra"), &mounts_list, &overlays_list) >= 0);
+
+        /* Depending on the filesystem, traversal order changes - sort the vectors */
+        strv_sort(mounts_list);
+
+        assert_se(strv_equal(STRV_MAKE("/etc/os-release", "/var/opt"), mounts_list));
+        assert_se(strv_equal(STRV_MAKE("/usr/lib"), overlays_list));
+        strv_free(TAKE_PTR(mounts_list));
+        strv_free(TAKE_PTR(overlays_list));
+
+        /* clash: one has file, other has directory at the same path */
+        assert_se(touch_file(strjoina(d, "/extra/opt"), true,
+                                      USEC_INFINITY, UID_INVALID, GID_INVALID, MODE_INVALID) >= 0);
+
+        assert_se(path_compute_overlays(strjoina(d, "/root"), strjoina(d, "/extra"), &mounts_list, &overlays_list) == -EINVAL);
+
+        /* empty extra */
+        strv_free(TAKE_PTR(mounts_list));
+        strv_free(TAKE_PTR(overlays_list));
+        assert_se(mkdir_p(strjoina(d, "/empty"), 0755) >= 0);
+        assert_se(path_compute_overlays(strjoina(d, "/root"), strjoina(d, "/empty"), &mounts_list, &overlays_list) >= 0);
+        assert_se(strv_isempty(mounts_list));
+        assert_se(strv_isempty(overlays_list));
+
+        /* empty root */
+        strv_free(TAKE_PTR(mounts_list));
+        strv_free(TAKE_PTR(overlays_list));
+        assert_se(path_compute_overlays(strjoina(d, "/empty"), strjoina(d, "/extra"), &mounts_list, &overlays_list) >= 0);
+        assert_se(strv_equal(STRV_MAKE("/"), mounts_list));
+        assert_se(strv_isempty(overlays_list));
+
+        /* both empty */
+        strv_free(TAKE_PTR(mounts_list));
+        strv_free(TAKE_PTR(overlays_list));
+        assert_se(path_compute_overlays(strjoina(d, "/empty"), strjoina(d, "/empty"), &mounts_list, &overlays_list) >= 0);
+        assert_se(strv_isempty(mounts_list));
+        assert_se(strv_isempty(overlays_list));
+}
+
 int main(int argc, char **argv) {
         test_setup_logging(LOG_DEBUG);
 
@@ -733,6 +798,7 @@ int main(int argc, char **argv) {
         test_empty_or_root();
         test_path_startswith_set();
         test_path_startswith_strv();
+        test_overlay();
 
         test_systemd_installation_has_version(argv[1]); /* NULL is OK */
 
