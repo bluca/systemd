@@ -181,3 +181,10 @@ bool empty_or_root(const char *root);
 static inline const char *empty_to_root(const char *path) {
         return isempty(path) ? "/" : path;
 }
+
+/* Given two directory trees, compute the list of direct mounts
+ * and overlay mounts required to set up a merge of the two
+ * layers, as relative paths from the root of the extra_image.
+ * Leaf nodes (files, empty directories) are listed in the mount list,
+ * while divergent non-empty directories are listed in the overlay list. */
+int path_compute_overlays(const char *root_image, const char *extra_image, char ***ret_mounts_list, char ***ret_overlays_list);
