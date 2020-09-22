@@ -11,6 +11,7 @@
 #include "alloc-util.h"
 #include "base-filesystem.h"
 #include "dev-setup.h"
+#include "escape.h"
 #include "fd-util.h"
 #include "fs-util.h"
 #include "label.h"
@@ -40,6 +41,7 @@
 typedef enum MountMode {
         /* This is ordered by priority! */
         INACCESSIBLE,
+        OVERLAY_MOUNT,
         MOUNT_IMAGES,
         BIND_MOUNT,
         BIND_MOUNT_RECURSIVE,
@@ -67,6 +69,7 @@ typedef struct MountEntry {
         char *path_malloc;        /* Use this instead of 'path_const' if we had to allocate memory */
         const char *source_const; /* The source path, for bind mounts or images */
         char *source_malloc;
+        char *overlay_malloc;     /* The prefix to overlay, for overlay mounts */
         const char *options_const;/* Mount options for tmpfs */
         char *options_malloc;
         unsigned long flags;      /* Mount flags used by EMPTY_DIR and TMPFS. Do not include MS_RDONLY here, but please use read_only. */
@@ -195,6 +198,7 @@ static const MountEntry protect_system_strict_table[] = {
 
 static const char * const mount_mode_table[_MOUNT_MODE_MAX] = {
         [INACCESSIBLE]         = "inaccessible",
+        [OVERLAY_MOUNT]        = "overlay",
         [BIND_MOUNT]           = "bind",
         [BIND_MOUNT_RECURSIVE] = "rbind",
         [PRIVATE_TMP]          = "private-tmp",
@@ -244,6 +248,7 @@ static void mount_entry_done(MountEntry *p) {
 
         p->path_malloc = mfree(p->path_malloc);
         p->source_malloc = mfree(p->source_malloc);
+        p->overlay_malloc = mfree(p->overlay_malloc);
         p->options_malloc = mfree(p->options_malloc);
         p->image_options = mount_options_free_all(p->image_options);
 }
@@ -333,6 +338,10 @@ static int append_mount_images(MountEntry **p, const MountImage *mount_images, s
 
         for (size_t i = 0; i < n; i++) {
                 const MountImage *m = mount_images + i;
+
+                /* Overlays are processed separately, as we need the new root available */
+                if (isempty(m->destination))
+                        continue;
 
                 *((*p)++) = (MountEntry) {
                         .path_const = m->destination,
@@ -891,7 +900,7 @@ static int mount_tmpfs(const MountEntry *m) {
         return 1;
 }
 
-static int mount_images(const MountEntry *m) {
+static int mount_image(const MountEntry *m) {
         _cleanup_free_ char *error_path = NULL;
         int r;
 
@@ -900,6 +909,29 @@ static int mount_images(const MountEntry *m) {
         r = verity_dissect_and_mount(mount_entry_source(m), mount_entry_path(m), m->image_options, &error_path);
         if (r < 0)
                 return log_debug_errno(r, "%s: %m", error_path);
+
+        return 1;
+}
+
+static int mount_overlay(const MountEntry *m) {
+        _cleanup_free_ char *escaped_source = NULL;
+        const char *options, *where;
+
+        assert(m);
+
+        where = prefix_roota(mount_entry_path(m), m->overlay_malloc);
+
+        (void) mkdir_p_label(where, 0755);
+
+        escaped_source = shell_escape(prefix_roota(mount_entry_source(m), m->overlay_malloc), ",:");
+        if (!escaped_source)
+                return -ENOMEM;
+
+        /* We only support read-only overlays, so no upper nor work directories */
+        options = strjoina("lowerdir=", escaped_source, ":", where);
+
+        if (mount("overlay", where, "overlay", MS_RDONLY, options) < 0)
+                return log_debug_errno(errno, "Failed to mount overlay %s on %s: %m", options, where);
 
         return 1;
 }
@@ -937,7 +969,7 @@ static int follow_symlink(
         return 0;
 }
 
-static int apply_mount(
+static int apply_one_mount(
                 const char *root_directory,
                 MountEntry *m) {
 
@@ -947,7 +979,7 @@ static int apply_mount(
 
         assert(m);
 
-        log_debug("Applying namespace mount on %s", mount_entry_path(m));
+        log_debug("Applying namespace mount on %s%s", mount_entry_path(m), strempty(m->overlay_malloc));
 
         switch (m->mode) {
 
@@ -1037,7 +1069,10 @@ static int apply_mount(
                 return mount_procfs(m);
 
         case MOUNT_IMAGES:
-                return mount_images(m);
+                return mount_image(m);
+
+        case OVERLAY_MOUNT:
+                return mount_overlay(m);
 
         default:
                 assert_not_reached("Unknown mode");
@@ -1163,6 +1198,7 @@ static size_t namespace_calculate_mounts(
                 char** empty_directories,
                 size_t n_bind_mounts,
                 size_t n_temporary_filesystems,
+                const MountImage *mount_images,
                 size_t n_mount_images,
                 const char* tmp_dir,
                 const char* var_tmp_dir,
@@ -1187,6 +1223,16 @@ static size_t namespace_calculate_mounts(
                   ELEMENTSOF(protect_home_read_only_table) :
                   ((protect_home == PROTECT_HOME_TMPFS) ?
                    ELEMENTSOF(protect_home_tmpfs_table) : 0)));
+
+
+        for (size_t i = 0, n = n_mount_images; i < n; ++i) {
+                const MountImage *m = mount_images + i;
+
+                /* Overlays are processed separately as they might require multiple mounts */
+                if (isempty(m->destination))
+                        --n_mount_images;
+        }
+
 
         return !!tmp_dir + !!var_tmp_dir +
                 strv_length(read_write_paths) +
@@ -1219,6 +1265,159 @@ static void normalize_mounts(const char *root_directory, MountEntry *mounts, siz
         drop_outside_root(root_directory, mounts, n_mounts);
         drop_inaccessible(mounts, n_mounts);
         drop_nop(mounts, n_mounts);
+}
+
+static int apply_mounts(
+                const char *root,
+                FILE *proc_self_mountinfo,
+                MountEntry *mounts,
+                size_t *n_mounts,
+                char **error_path) {
+        _cleanup_free_ char **deny_list = NULL;
+        MountEntry *m = NULL;
+        size_t j;
+        int r;
+
+        /* First round, establish all mounts we need */
+        for (;;) {
+                bool again = false;
+
+                for (m = mounts; m < mounts + *n_mounts; ++m) {
+
+                        if (m->applied)
+                                continue;
+
+                        r = follow_symlink(root, m);
+                        if (r < 0) {
+                                if (error_path && mount_entry_path(m))
+                                        *error_path = strdup(mount_entry_path(m));
+                                return r;
+                        }
+                        if (r == 0) {
+                                /* We hit a symlinked mount point. The entry got rewritten and might
+                                        * point to a very different place now. Let's normalize the changed
+                                        * list, and start from the beginning. After all to mount the entry
+                                        * at the new location we might need some other mounts first */
+                                again = true;
+                                break;
+                        }
+
+                        r = apply_one_mount(root, m);
+                        if (r < 0) {
+                                if (error_path && mount_entry_path(m))
+                                        *error_path = strdup(mount_entry_path(m));
+                                return r;
+                        }
+
+                        m->applied = true;
+                }
+
+                if (!again)
+                        break;
+
+                normalize_mounts(root, mounts, n_mounts);
+        }
+
+        /* Create a deny list we can pass to bind_mount_recursive() */
+        deny_list = new(char*, (*n_mounts)+1);
+        if (!deny_list)
+                return -ENOMEM;
+        for (j = 0; j < *n_mounts; j++)
+                deny_list[j] = (char*) mount_entry_path(mounts+j);
+        deny_list[j] = NULL;
+
+        /* Second round, flip the ro bits if necessary. */
+        for (m = mounts; m < mounts + *n_mounts; ++m) {
+                r = make_read_only(m, deny_list, proc_self_mountinfo);
+                if (r < 0) {
+                        if (error_path && mount_entry_path(m))
+                                *error_path = strdup(mount_entry_path(m));
+                        return r;
+                }
+        }
+
+        return 0;
+}
+
+static int make_tmp_prefix(const char *prefix) {
+        _cleanup_free_ char *t = NULL;
+        int r;
+
+        /* Don't do anything unless we know the dir is actually missing */
+        r = access(prefix, F_OK);
+        if (r >= 0)
+                return 0;
+        if (errno != ENOENT)
+                return -errno;
+
+        r = mkdir_parents(prefix, 0755);
+        if (r < 0)
+                return r;
+
+        r = tempfn_random(prefix, NULL, &t);
+        if (r < 0)
+                return r;
+
+        if (mkdir(t, 0777) < 0)
+                return -errno;
+
+        if (chmod(t, 01777) < 0) {
+                r = -errno;
+                (void) rmdir(t);
+                return r;
+        }
+
+        if (rename(t, prefix) < 0) {
+                r = -errno;
+                (void) rmdir(t);
+                return r == -EEXIST ? 0 : r; /* it's fine if someone else created the dir by now */
+        }
+
+        return 0;
+
+}
+
+static int setup_one_tmp_dir(const char *id, const char *prefix, char **path) {
+        _cleanup_free_ char *x = NULL;
+        char bid[SD_ID128_STRING_MAX];
+        sd_id128_t boot_id;
+        int r;
+
+        assert(id);
+        assert(prefix);
+        assert(path);
+
+        /* We include the boot id in the directory so that after a
+         * reboot we can easily identify obsolete directories. */
+
+        r = sd_id128_get_boot(&boot_id);
+        if (r < 0)
+                return r;
+
+        x = strjoin(prefix, "/systemd-private-", sd_id128_to_string(boot_id, bid), "-", id, "-XXXXXX");
+        if (!x)
+                return -ENOMEM;
+
+        r = make_tmp_prefix(prefix);
+        if (r < 0)
+                return r;
+
+        RUN_WITH_UMASK(0077)
+                if (!mkdtemp(x))
+                        return -errno;
+
+        RUN_WITH_UMASK(0000) {
+                char *y;
+
+                y = strjoina(x, "/tmp");
+
+                if (mkdir(y, 0777 | S_ISVTX) < 0)
+                        return -errno;
+        }
+
+        *path = TAKE_PTR(x);
+
+        return 0;
 }
 
 int setup_namespace(
@@ -1259,6 +1458,7 @@ int setup_namespace(
         _cleanup_(dissected_image_unrefp) DissectedImage *dissected_image = NULL;
         _cleanup_free_ void *root_hash_decoded = NULL;
         _cleanup_free_ char *verity_data = NULL, *hash_sig_path = NULL;
+        _cleanup_fclose_ FILE *proc_self_mountinfo = NULL;
         MountEntry *m = NULL, *mounts = NULL;
         size_t n_mounts;
         bool require_prefix = false, root_is_read_only = false, setup_propagate = false;
@@ -1326,6 +1526,7 @@ int setup_namespace(
                         empty_directories,
                         n_bind_mounts,
                         n_temporary_filesystems,
+                        mount_images,
                         n_mount_images,
                         tmp_dir, var_tmp_dir,
                         protect_home, protect_system,
@@ -1464,8 +1665,6 @@ int setup_namespace(
                 r = prefix_where_needed(mounts, n_mounts, root);
                 if (r < 0)
                         goto finish;
-
-                normalize_mounts(root, mounts, &n_mounts);
         }
 
         /* All above is just preparation, figuring out what to do. Let's now actually start doing something. */
@@ -1539,10 +1738,16 @@ int setup_namespace(
         if (root_image || root_directory)
                 (void) base_filesystem_create(root, UID_INVALID, GID_INVALID);
 
-        if (n_mounts > 0) {
-                _cleanup_fclose_ FILE *proc_self_mountinfo = NULL;
-                _cleanup_free_ char **blacklist = NULL;
-                size_t j;
+        /* If we have MountImages to set up with overlay, then we need the root to be
+         * available, as we need to figure out the common nodes. Hence this last part
+         * of the preparation is done at this point. */
+        if (n_mount_images > 0) {
+                _cleanup_free_ char *mount_point_parent = NULL;
+                /* To avoid excessive memory moves we use greedy_realloc. Keep a reference to
+                 * the actual size of the array separately, for further resizing. */
+                size_t mounts_array_size = n_mounts;
+
+                assert(unit_id);
 
                 /* Open /proc/self/mountinfo now as it may become unavailable if we mount anything on top of /proc.
                  * For example, this is the case with the option: 'InaccessiblePaths=/proc' */
@@ -1554,65 +1759,131 @@ int setup_namespace(
                         goto finish;
                 }
 
-                /* First round, establish all mounts we need */
-                for (;;) {
-                        bool again = false;
+                for (size_t i = 0; i < n_mount_images; i++) {
+                        _cleanup_strv_free_ char **mounts_list = NULL, **overlays_list = NULL;
+                        _cleanup_free_ char *mount_point = NULL;
+                        const MountImage *img = mount_images + i;
+                        MountEntry overlay_source;
+                        size_t n_overlays;
+                        char **p;
 
-                        for (m = mounts; m < mounts + n_mounts; ++m) {
+                        if (!isempty(img->destination))
+                                continue;
 
-                                if (m->applied)
-                                        continue;
-
-                                r = follow_symlink(root, m);
-                                if (r < 0) {
-                                        if (error_path && mount_entry_path(m))
-                                                *error_path = strdup(mount_entry_path(m));
+                        if (!mount_point_parent) {
+                                /* On systemd --user instance with protected home we don't have a propagate dir */
+                                if (!propagate_dir) {
+                                        log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to create temp directory for overlays, no propagate directory available");
                                         goto finish;
                                 }
-                                if (r == 0) {
-                                        /* We hit a symlinked mount point. The entry got rewritten and might point to a
-                                         * very different place now. Let's normalize the changed list, and start from
-                                         * the beginning. After all to mount the entry at the new location we might
-                                         * need some other mounts first */
-                                        again = true;
-                                        break;
-                                }
-
-                                r = apply_mount(root, m);
+                                r = setup_one_tmp_dir(unit_id, propagate_dir, &mount_point_parent);
                                 if (r < 0) {
-                                        if (error_path && mount_entry_path(m))
-                                                *error_path = strdup(mount_entry_path(m));
+                                        log_debug_errno(r, "Failed to create temp directory under %s: %m", propagate_dir);
                                         goto finish;
                                 }
-
-                                m->applied = true;
                         }
 
-                        if (!again)
-                                break;
+                        mount_point = path_join(mount_point_parent, basename(img->source));
+                        if (!mount_point) {
+                                r = -ENOMEM;
+                                goto finish;
+                        }
+                        (void) mkdir_label(mount_point, 0700);
 
-                        normalize_mounts(root, mounts, &n_mounts);
-                }
-
-                /* Create a blacklist we can pass to bind_mount_recursive() */
-                blacklist = new(char*, n_mounts+1);
-                if (!blacklist) {
-                        r = -ENOMEM;
-                        goto finish;
-                }
-                for (j = 0; j < n_mounts; j++)
-                        blacklist[j] = (char*) mount_entry_path(mounts+j);
-                blacklist[j] = NULL;
-
-                /* Second round, flip the ro bits if necessary. */
-                for (m = mounts; m < mounts + n_mounts; ++m) {
-                        r = make_read_only(m, blacklist, proc_self_mountinfo);
+                        /* We need to figure out the overlay setup, so mount the image immediately */
+                        overlay_source = (MountEntry) {
+                                .path_const = mount_point,
+                                .mode = MOUNT_IMAGES,
+                                .source_const = img->source,
+                                .image_options = img->mount_options,
+                                .ignore = img->ignore_enoent,
+                        };
+                        r = mount_image(&overlay_source);
                         if (r < 0) {
-                                if (error_path && mount_entry_path(m))
-                                        *error_path = strdup(mount_entry_path(m));
+                                log_debug_errno(r, "Failed to mount image %s: %m", img->source);
+                                goto finish;
+                        }
+
+                        r = path_compute_overlays(root, mount_point, &mounts_list, &overlays_list);
+                        if (r < 0) {
+                                log_debug_errno(r, "Failed to compute overlays between %s and %s: %m", root, img->source);
+                                goto finish;
+                        }
+
+                        n_overlays = strv_length(mounts_list) + strv_length(overlays_list);
+                        mounts = GREEDY_REALLOC0(mounts, mounts_array_size, n_mounts + n_overlays);
+                        if (!mounts) {
+                                r = -ENOMEM;
+                                goto finish;
+                        }
+                        m = mounts + n_mounts;
+
+                        STRV_FOREACH(p, mounts_list) {
+                                _cleanup_free_ char *s = NULL, *d = NULL;
+
+                                s = path_join(mount_point, *p);
+                                d = path_join(root, *p);
+                                if (!s || !d) {
+                                        r = -ENOMEM;
+                                        goto finish;
+                                }
+
+                                *(m++) = (MountEntry) {
+                                        .source_malloc = TAKE_PTR(s),
+                                        .path_malloc = TAKE_PTR(d),
+                                        .mode = BIND_MOUNT,
+                                        .has_prefix = true,
+                                };
+                        }
+                        STRV_FOREACH(p, overlays_list) {
+                                _cleanup_free_ char *s = NULL, *d = NULL;
+
+                                s = strdup(mount_point);
+                                d = strdup(*p);
+                                if (!s || !d) {
+                                        r = -ENOMEM;
+                                        goto finish;
+                                }
+
+                                *(m++) = (MountEntry) {
+                                        .path_const = root,
+                                        .source_malloc = TAKE_PTR(s),
+                                        .overlay_malloc = TAKE_PTR(d),
+                                        .mode = OVERLAY_MOUNT,
+                                        .has_prefix = true,
+                                };
+                        }
+
+                        /* Note that we do not normalize here: we are calculating these mounts ourselves,
+                         * from the defined scope of the images in use. They cannot be reordered, as the
+                         * calculation on whether to do bind mounts or overlays would become invalid.
+                         * For example, the root image could have an empty /opt, and two images could
+                         * have /opt/file0 and /opt/file1 respectively. The first image will simply have
+                         * a bind mount of /opt, but the second one will result in an overlay. */
+                        r = apply_mounts(root, proc_self_mountinfo, mounts + n_mounts, &n_overlays, error_path);
+                        if (r < 0)
+                                goto finish;
+
+                        n_mounts += n_overlays;
+                }
+        }
+
+        if (n_mounts > 0) {
+                normalize_mounts(root, mounts, &n_mounts);
+
+                if (!proc_self_mountinfo) {
+                        proc_self_mountinfo = fopen("/proc/self/mountinfo", "re");
+                        if (!proc_self_mountinfo) {
+                                r = log_debug_errno(errno, "Failed to open /proc/self/mountinfo: %m");
+                                if (error_path)
+                                        *error_path = strdup("/proc/self/mountinfo");
                                 goto finish;
                         }
                 }
+
+                r = apply_mounts(root, proc_self_mountinfo, mounts, &n_mounts, error_path);
+                if (r < 0)
+                        goto finish;
         }
 
         /* MS_MOVE does not work on MS_SHARED so the remount MS_SHARED will be done later */
@@ -1812,87 +2083,6 @@ int temporary_filesystem_add(
                 .path = TAKE_PTR(p),
                 .options = TAKE_PTR(o),
         };
-
-        return 0;
-}
-
-static int make_tmp_prefix(const char *prefix) {
-        _cleanup_free_ char *t = NULL;
-        int r;
-
-        /* Don't do anything unless we know the dir is actually missing */
-        r = access(prefix, F_OK);
-        if (r >= 0)
-                return 0;
-        if (errno != ENOENT)
-                return -errno;
-
-        r = mkdir_parents(prefix, 0755);
-        if (r < 0)
-                return r;
-
-        r = tempfn_random(prefix, NULL, &t);
-        if (r < 0)
-                return r;
-
-        if (mkdir(t, 0777) < 0)
-                return -errno;
-
-        if (chmod(t, 01777) < 0) {
-                r = -errno;
-                (void) rmdir(t);
-                return r;
-        }
-
-        if (rename(t, prefix) < 0) {
-                r = -errno;
-                (void) rmdir(t);
-                return r == -EEXIST ? 0 : r; /* it's fine if someone else created the dir by now */
-        }
-
-        return 0;
-
-}
-
-static int setup_one_tmp_dir(const char *id, const char *prefix, char **path) {
-        _cleanup_free_ char *x = NULL;
-        char bid[SD_ID128_STRING_MAX];
-        sd_id128_t boot_id;
-        int r;
-
-        assert(id);
-        assert(prefix);
-        assert(path);
-
-        /* We include the boot id in the directory so that after a
-         * reboot we can easily identify obsolete directories. */
-
-        r = sd_id128_get_boot(&boot_id);
-        if (r < 0)
-                return r;
-
-        x = strjoin(prefix, "/systemd-private-", sd_id128_to_string(boot_id, bid), "-", id, "-XXXXXX");
-        if (!x)
-                return -ENOMEM;
-
-        r = make_tmp_prefix(prefix);
-        if (r < 0)
-                return r;
-
-        RUN_WITH_UMASK(0077)
-                if (!mkdtemp(x))
-                        return -errno;
-
-        RUN_WITH_UMASK(0000) {
-                char *y;
-
-                y = strjoina(x, "/tmp");
-
-                if (mkdir(y, 0777 | S_ISVTX) < 0)
-                        return -errno;
-        }
-
-        *path = TAKE_PTR(x);
 
         return 0;
 }

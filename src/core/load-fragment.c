@@ -4550,9 +4550,14 @@ int config_parse_mount_images(
                         break;
 
                 q = tuple;
-                r = extract_many_words(&q, ":", EXTRACT_CUNESCAPE|EXTRACT_UNESCAPE_SEPARATORS, &first, &second, NULL);
-                if (r < 0)
-                        return r;
+                r = extract_many_words(&q, ":", EXTRACT_CUNESCAPE|EXTRACT_UNESCAPE_SEPARATORS|EXTRACT_DONT_COALESCE_SEPARATORS, &first, &second, NULL);
+                if (r == -ENOMEM)
+                        return log_oom();
+                if (r < 0) {
+                        log_syntax(unit, LOG_WARNING, filename, line, r,
+                                   "Invalid syntax in %s=, ignoring: %s", lvalue, tuple);
+                        return 0;
+                }
                 if (r == 0)
                         continue;
 
@@ -4573,21 +4578,18 @@ int config_parse_mount_images(
                 if (r < 0)
                         continue;
 
-                if (isempty(second)) {
-                        log_syntax(unit, LOG_ERR, filename, line, 0, "Missing destination in %s, ignoring: %s", lvalue, rvalue);
-                        continue;
-                }
+                if (!isempty(second)) {
+                        r = unit_full_printf(u, second, &dresolved);
+                        if (r < 0) {
+                                log_syntax(unit, LOG_WARNING, filename, line, r,
+                                                "Failed to resolve specifiers in \"%s\", ignoring: %m", second);
+                                continue;
+                        }
 
-                r = unit_full_printf(u, second, &dresolved);
-                if (r < 0) {
-                        log_syntax(unit, LOG_ERR, filename, line, r,
-                                        "Failed to resolve specifiers in \"%s\", ignoring: %m", second);
-                        continue;
+                        r = path_simplify_and_warn(dresolved, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue);
+                        if (r < 0)
+                                continue;
                 }
-
-                r = path_simplify_and_warn(dresolved, PATH_CHECK_ABSOLUTE, unit, filename, line, lvalue);
-                if (r < 0)
-                        continue;
 
                 for (;;) {
                         _cleanup_free_ char *partition = NULL, *mount_options = NULL, *mount_options_resolved = NULL;
@@ -4643,7 +4645,7 @@ int config_parse_mount_images(
                 r = mount_image_add(&c->mount_images, &c->n_mount_images,
                                     &(MountImage) {
                                             .source = s,
-                                            .destination = dresolved,
+                                            .destination = (char *)strempty(dresolved),
                                             .mount_options = options,
                                             .ignore_enoent = permissive,
                                     });
