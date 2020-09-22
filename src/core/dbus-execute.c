@@ -3314,9 +3314,9 @@ int bus_exec_context_set_transient_property(
                                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Source path %s is not absolute.", source);
                         if (!path_is_normalized(source))
                                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Source path %s is not normalized.", source);
-                        if (!path_is_absolute(destination))
+                        if (!isempty(destination) && !path_is_absolute(destination))
                                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Destination path %s is not absolute.", destination);
-                        if (!path_is_normalized(destination))
+                        if (!isempty(destination) && !path_is_normalized(destination))
                                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Destination path %s is not normalized.", destination);
 
                         /* Need to store them in the unit with the escapes, so that they can be parsed again */

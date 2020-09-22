@@ -381,6 +381,14 @@
         definitions. Each definition consists of a colon-separated tuple of source path and destination
         definitions, optionally followed by another colon and a list of mount options.</para>
 
+        <para>If the destination is empty, then a variable overlay is set up on the root. Nodes in the image
+        that are leaves in the root (empty directories or files) are bind-mounted individually.
+        Existing directories with differing content will be set up with a read-only overlayfs.
+        For example, if the root has <filename>/opt/</filename> and <filename>/var/foo</filename>, and the
+        image has <filename>/opt/bar</filename> and <filename>/var/baz</filename>, the end result will be
+        that <filename>/opt/</filename> from the image is bind-mounted on <filename>/opt/</filename> on the root,
+        and <filename>/var</filename> from the root and the image will both be part of an OverlayFS mount.</para>
+
         <para>Mount options may be defined as a single comma-separated list of options, in which case they
         will be implicitly applied to the root partition on the image, or a series of colon-separated tuples
         of partition name and mount options. Valid partition names and mount options are the same as for

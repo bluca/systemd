@@ -1665,7 +1665,7 @@ static int bus_append_execute_property(sd_bus_message *m, const char *field, con
                                 break;
 
                         q = tuple;
-                        r = extract_many_words(&q, ":", EXTRACT_CUNESCAPE|EXTRACT_UNESCAPE_SEPARATORS, &first, &second, NULL);
+                        r = extract_many_words(&q, ":", EXTRACT_CUNESCAPE|EXTRACT_UNESCAPE_SEPARATORS|EXTRACT_DONT_COALESCE_SEPARATORS, &first, &second, NULL);
                         if (r < 0)
                                 return r;
                         if (r == 0)
@@ -1676,11 +1676,6 @@ static int bus_append_execute_property(sd_bus_message *m, const char *field, con
                                 permissive = true;
                                 source++;
                         }
-
-                        if (isempty(second))
-                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                                        "Missing argument after ':': %s",
-                                                        eq);
 
                         r = sd_bus_message_open_container(m, 'r', "ssba(ss)");
                         if (r < 0)

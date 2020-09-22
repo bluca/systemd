@@ -217,7 +217,25 @@ do
     sleep 0.1
 done
 
-systemctl is-active testservice-50d.service
+# MountImages without a destination parameter will set up an overlay
+systemd-run -t --property MountImages=/usr/share/app0.raw --property RootImage=${image}.raw /usr/bin/cat /opt/script0.sh | grep -q -F "cat /etc/os-release"
+systemd-run -t --property MountImages=/usr/share/app0.raw --property RootImage=${image}.raw /usr/bin/cat /etc/systemd/system/some_file | grep -q -F "MARKER=1"
+systemd-run -t --property MountImages="/usr/share/app0.raw /usr/share/app1.raw" --property RootImage=${image}.raw /usr/bin/cat /opt/script0.sh | grep -q -F "cat /etc/os-release"
+systemd-run -t --property MountImages="/usr/share/app0.raw /usr/share/app1.raw" --property RootImage=${image}.raw /usr/bin/cat /etc/systemd/system/some_file | grep -q -F "MARKER=1"
+systemd-run -t --property MountImages="/usr/share/app0.raw /usr/share/app1.raw" --property RootImage=${image}.raw /usr/bin/cat /opt/script1.sh | grep -q -F "cat /etc/os-release"
+systemd-run -t --property MountImages="/usr/share/app0.raw /usr/share/app1.raw" --property RootImage=${image}.raw /usr/bin/cat /etc/systemd/system/other_file | grep -q -F "MARKER=1"
+cat >/run/systemd/system/testservice-50e.service <<EOF
+[Service]
+MountAPIVFS=yes
+TemporaryFileSystem=/run
+RootImage=${image}.raw
+MountImages=/usr/share/app0.raw /usr/share/app1.raw
+ExecStart=/opt/script0.sh
+Type=oneshot
+RemainAfterExit=yes
+EOF
+systemctl start testservice-50e.service
+systemctl is-active testservice-50e.service
 
 echo OK >/testok
 
