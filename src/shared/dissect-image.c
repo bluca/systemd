@@ -1623,9 +1623,13 @@ static int verity_partition(
 
                         if (!restore_deferred_remove){
                                 /* To avoid races, disable automatic removal on umount while setting up the new device. Restore it on failure. */
+#ifdef CRYPT_DEACTIVATE_DEFERRED_CANCEL
+                                r = sym_crypt_deactivate_by_name(cd, name, CRYPT_DEACTIVATE_DEFERRED_CANCEL);
+#else
                                 r = dm_deferred_remove_cancel(name);
-                                /* If activation returns EBUSY there might be no deferred removal to cancel, that's fine */
-                                if (r < 0 && r != -ENXIO)
+#endif
+                                /* If activation returns ENXIO/EBUSY there might be no deferred removal to cancel, that's fine */
+                                if (r < 0 && r != -ENXIO && r != -EBUSY)
                                         return log_debug_errno(r, "Disabling automated deferred removal for verity device %s failed: %m", node);
                                 if (r == 0) {
                                         restore_deferred_remove = strdup(name);
