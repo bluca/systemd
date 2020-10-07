@@ -156,6 +156,65 @@ int bus_service_method_bind_mount(sd_bus_message *message, void *userdata, sd_bu
         return sd_bus_reply_method_return(message, NULL);
 }
 
+int bus_service_method_mount_image(sd_bus_message *message, void *userdata, sd_bus_error *error) {
+        _cleanup_free_ char *error_path = NULL;
+        _cleanup_(mount_options_free_allp) MountOptions *options = NULL;
+        int make_file_or_directory;
+        const char *dest, *src;
+        Unit *u = userdata;
+        int r;
+
+        assert(message);
+        assert(u);
+
+        r = mac_selinux_unit_access_check(u, message, "start", error);
+        if (r < 0)
+                return r;
+
+        r = sd_bus_message_read(message, "ssb", &src, &dest, &make_file_or_directory);
+        if (r < 0)
+                return r;
+
+        if (!path_is_absolute(src) || !path_is_normalized(src))
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Source path must be absolute and not contain ../.");
+
+        if (!path_is_absolute(dest) || !path_is_normalized(dest))
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Destination path must be absolute and not contain ../.");
+
+        r = bus_read_mount_options(message, error, &options, NULL, "");
+        if (r < 0)
+                return r;
+
+        r = bus_verify_manage_units_async_full(
+                        u,
+                        "mount-image",
+                        CAP_SYS_ADMIN,
+                        N_("Authentication is required to mount an image on '$(unit)'."),
+                        true,
+                        message,
+                        error);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return 1; /* No authorization for now, but the async polkit stuff will call us again when it has it */
+
+        if (u->type != UNIT_SERVICE)
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Unit is not of type [Service]");
+
+        if (SERVICE(u)->state != SERVICE_RUNNING)
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Unit is not of running");
+
+        r = mount_image_in_namespace(unit_main_pid(u),
+                                     strjoina("/run/systemd/propagate/", u->id),
+                                     "/run/host/incoming/",
+                                     src, dest, options, make_file_or_directory,
+                                     &error_path);
+        if (r < 0)
+                return sd_bus_error_set_errnof(error, r, "%s", error_path);
+
+        return sd_bus_reply_method_return(message, NULL);
+}
+
 const sd_bus_vtable bus_service_vtable[] = {
         SD_BUS_VTABLE_START(0),
         SD_BUS_PROPERTY("Type", "s", property_get_type, offsetof(Service, type), SD_BUS_VTABLE_PROPERTY_CONST),
@@ -219,6 +278,16 @@ const sd_bus_vtable bus_service_vtable[] = {
                                  SD_BUS_PARAM(mkdir),
                                  NULL,,
                                  bus_service_method_bind_mount,
+                                 SD_BUS_VTABLE_UNPRIVILEGED),
+
+        SD_BUS_METHOD_WITH_NAMES("MountImage",
+                                 "ssba(ss)",
+                                 SD_BUS_PARAM(source)
+                                 SD_BUS_PARAM(destination)
+                                 SD_BUS_PARAM(mkdir)
+                                 SD_BUS_PARAM(options),
+                                 NULL,,
+                                 bus_service_method_mount_image,
                                  SD_BUS_VTABLE_UNPRIVILEGED),
 
         /* The following four are obsolete, and thus marked hidden here. They moved into the Unit interface */

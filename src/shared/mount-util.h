@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#include "dissect-image.h"
 #include "errno-util.h"
 #include "macro.h"
 
@@ -98,3 +99,4 @@ static inline void umount_and_rmdir_and_free(char *p) {
 DEFINE_TRIVIAL_CLEANUP_FUNC(char*, umount_and_rmdir_and_free);
 
 int bind_mount_in_namespace(pid_t target, const char *propagate_path, const char *incoming_path, const char *src, const char *dest, int read_only, int make_file_or_directory, char **inaccessible_paths, char **error_path);
+int mount_image_in_namespace(pid_t target, const char *propagate_path, const char *incoming_path, const char *src, const char *dest, const MountOptions *options, int make_file_or_directory, char **error_path);
