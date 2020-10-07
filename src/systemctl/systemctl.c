@@ -6119,6 +6119,74 @@ static int mount_bind(int argc, char *argv[], void *userdata) {
         return 0;
 }
 
+static int mount_image(int argc, char *argv[], void *userdata) {
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
+        _cleanup_free_ char *n = NULL;
+        sd_bus *bus;
+        int r;
+
+        r = acquire_bus(BUS_MANAGER, &bus);
+        if (r < 0)
+                return r;
+
+        polkit_agent_open_maybe();
+
+        r = unit_name_mangle(argv[1], arg_quiet ? 0 : UNIT_NAME_MANGLE_WARN, &n);
+        if (r < 0)
+                return log_error_errno(r, "Failed to mangle unit name: %m");
+
+        r = sd_bus_message_new_method_call(
+                        bus,
+                        &m,
+                        "org.freedesktop.systemd1",
+                        "/org/freedesktop/systemd1",
+                        "org.freedesktop.systemd1.Manager",
+                        "MountImageUnit");
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        r = sd_bus_message_append(
+                        m,
+                        "sssb",
+                        n,
+                        argv[2],
+                        argc > 3 ? argv[3] : "",
+                        arg_mkdir);
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        r = sd_bus_message_open_container(m, 'a', "(ss)");
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        if (argc == 5) {
+                r = sd_bus_message_append(m, "(ss)", "root", argv[4]);
+                if (r < 0)
+                        return bus_log_create_error(r);
+        } else if (argc > 5 && argc % 2 != 0)
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid number of mount options.");
+        else if (argc > 5) {
+                char **partition, **mount_options;
+
+                STRV_FOREACH_PAIR(partition, mount_options, strv_skip(argv, 4)) {
+                        r = sd_bus_message_append(m, "(ss)", *partition, *mount_options);
+                        if (r < 0)
+                                return bus_log_create_error(r);
+                }
+        }
+
+        r = sd_bus_message_close_container(m);
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        r = sd_bus_call(bus, m, -1, &error, NULL);
+        if (r < 0)
+                return log_error_errno(r, "Failed to mount image: %s", bus_error_message(&error, r));
+
+        return 0;
+}
+
 static int set_property(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
@@ -7977,6 +8045,8 @@ static int systemctl_help(void) {
                "  help PATTERN...|PID...              Show manual for one or more units\n"
                "  bind UNIT PATH [PATH]               Bind mount a path from the host into a\n"
                "                                      unit's namespace\n"
+               "  mount-image UNIT PATH [PATH [OPTS]] Mount an image from the host into a\n"
+               "                                      unit's namespace\n"
                "  reset-failed [PATTERN...]           Reset failed state for all, one, or more\n"
                "                                      units\n"
                "  list-dependencies [UNIT]            Recursively show units which are required\n"
@@ -8097,7 +8167,7 @@ static int systemctl_help(void) {
                "                         Boot into a specific boot loader entry on next boot\n"
                "     --plain             Print unit dependencies as a list instead of a tree\n"
                "     --read-only         Create read-only bind mount\n"
-               "     --mkdir             Create directory before bind mounting, if missing\n"
+               "     --mkdir             Create directory before mounting, if missing\n"
                "\nSee the %2$s for details.\n"
                , program_invocation_short_name
                , link
@@ -9295,6 +9365,7 @@ static int systemctl_main(int argc, char *argv[]) {
                 { "add-requires",          3,        VERB_ANY, 0,                add_dependency          },
                 { "edit",                  2,        VERB_ANY, VERB_ONLINE_ONLY, edit                    },
                 { "bind",                  3,        4,        VERB_ONLINE_ONLY, mount_bind              },
+                { "mount-image",           3,        VERB_ANY, VERB_ONLINE_ONLY, mount_image             },
                 {}
         };
 

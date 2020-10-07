@@ -892,56 +892,14 @@ static int mount_tmpfs(const MountEntry *m) {
 }
 
 static int mount_images(const MountEntry *m) {
-        _cleanup_(loop_device_unrefp) LoopDevice *loop_device = NULL;
-        _cleanup_(decrypted_image_unrefp) DecryptedImage *decrypted_image = NULL;
-        _cleanup_(dissected_image_unrefp) DissectedImage *dissected_image = NULL;
-        _cleanup_free_ void *root_hash_decoded = NULL;
-        _cleanup_free_ char *verity_data = NULL, *hash_sig = NULL;
-        DissectImageFlags dissect_image_flags = m->read_only ? DISSECT_IMAGE_READ_ONLY : 0;
-        size_t root_hash_size = 0;
+        _cleanup_free_ char *error_path = NULL;
         int r;
 
-        r = verity_metadata_load(mount_entry_source(m), NULL, &root_hash_decoded, &root_hash_size, &verity_data, &hash_sig);
-        if (r < 0)
-                return log_debug_errno(r, "Failed to load root hash: %m");
-        dissect_image_flags |= verity_data ? DISSECT_IMAGE_NO_PARTITION_TABLE : 0;
+        assert(m);
 
-        r = loop_device_make_by_path(mount_entry_source(m),
-                                     m->read_only ? O_RDONLY : O_RDWR,
-                                     verity_data ? 0 : LO_FLAGS_PARTSCAN,
-                                     &loop_device);
+        r = verity_dissect_and_mount(mount_entry_source(m), mount_entry_path(m), m->image_options, &error_path);
         if (r < 0)
-                return log_debug_errno(r, "Failed to create loop device for image: %m");
-
-        r = dissect_image(loop_device->fd, root_hash_decoded, root_hash_size, verity_data, m->image_options, dissect_image_flags, &dissected_image);
-        /* No partition table? Might be a single-filesystem image, try again */
-        if (!verity_data && r < 0 && r == -ENOPKG)
-                 r = dissect_image(loop_device->fd, root_hash_decoded, root_hash_size, verity_data, m->image_options, dissect_image_flags|DISSECT_IMAGE_NO_PARTITION_TABLE, &dissected_image);
-        if (r < 0)
-                return log_debug_errno(r, "Failed to dissect image: %m");
-
-        r = dissected_image_decrypt(dissected_image, NULL, root_hash_decoded, root_hash_size, verity_data, hash_sig, NULL, 0, dissect_image_flags, &decrypted_image);
-        if (r < 0)
-                return log_debug_errno(r, "Failed to decrypt dissected image: %m");
-
-        r = mkdir_p_label(mount_entry_path(m), 0755);
-        if (r < 0)
-                return log_debug_errno(r, "Failed to create destination directory %s: %m", mount_entry_path(m));
-        r = umount_recursive(mount_entry_path(m), 0);
-        if (r < 0)
-                return log_debug_errno(r, "Failed to umount under destination directory %s: %m", mount_entry_path(m));
-
-        r = dissected_image_mount(dissected_image, mount_entry_path(m), UID_INVALID, dissect_image_flags);
-        if (r < 0)
-                return log_debug_errno(r, "Failed to mount image: %m");
-
-        if (decrypted_image) {
-                r = decrypted_image_relinquish(decrypted_image);
-                if (r < 0)
-                        return log_debug_errno(r, "Failed to relinquish decrypted image: %m");
-        }
-
-        loop_device_relinquish(loop_device);
+                return log_debug_errno(r, "%s: %m", error_path);
 
         return 1;
 }

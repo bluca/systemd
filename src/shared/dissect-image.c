@@ -28,6 +28,8 @@
 #include "hexdecoct.h"
 #include "hostname-util.h"
 #include "id128-util.h"
+#include "loop-util.h"
+#include "mkdir.h"
 #include "mount-util.h"
 #include "mountpoint-util.h"
 #include "nulstr-util.h"
@@ -1990,5 +1992,95 @@ static const char *const partition_designator_table[] = {
         [PARTITION_ROOT_VERITY] = "root-verity",
         [PARTITION_ROOT_SECONDARY_VERITY] = "root-secondary-verity",
 };
+
+int verity_dissect_and_mount(const char *src, const char *dest, const MountOptions *options, char **error_path) {
+        _cleanup_(loop_device_unrefp) LoopDevice *loop_device = NULL;
+        _cleanup_(decrypted_image_unrefp) DecryptedImage *decrypted_image = NULL;
+        _cleanup_(dissected_image_unrefp) DissectedImage *dissected_image = NULL;
+        _cleanup_free_ void *root_hash_decoded = NULL;
+        _cleanup_free_ char *verity_data = NULL, *hash_sig = NULL;
+        DissectImageFlags dissect_image_flags;
+        size_t root_hash_size = 0;
+        int r;
+
+        assert(src);
+        assert(dest);
+
+        r = verity_metadata_load(src, NULL, &root_hash_decoded, &root_hash_size, &verity_data, &hash_sig);
+        if (r < 0) {
+                if (error_path)
+                        *error_path = strdup("Failed to load root hash");
+                return r;
+        }
+
+        dissect_image_flags = verity_data ? DISSECT_IMAGE_NO_PARTITION_TABLE : 0;
+
+        r = loop_device_make_by_path(
+                        src,
+                        O_RDWR,
+                        verity_data ? 0 : LO_FLAGS_PARTSCAN,
+                        &loop_device);
+        if (ERRNO_IS_PRIVILEGE(r) || r == -EROFS)
+                r = loop_device_make_by_path(
+                                src,
+                                O_RDONLY,
+                                verity_data ? 0 : LO_FLAGS_PARTSCAN,
+                                &loop_device);
+        if (r < 0) {
+                if (error_path)
+                        *error_path = strdup("Failed to create loop device for image");
+                return r;
+        }
+
+        r = dissect_image(loop_device->fd, root_hash_decoded, root_hash_size, verity_data, options, dissect_image_flags, &dissected_image);
+        /* No partition table? Might be a single-filesystem image, try again */
+        if (!verity_data && r == -ENOPKG)
+                 r = dissect_image(loop_device->fd, root_hash_decoded, root_hash_size, verity_data, options, dissect_image_flags|DISSECT_IMAGE_NO_PARTITION_TABLE, &dissected_image);
+        if (r < 0) {
+                if (error_path)
+                        *error_path = strdup("Failed to dissect image");
+                return r;
+        }
+
+        r = dissected_image_decrypt(dissected_image, NULL, root_hash_decoded, root_hash_size, verity_data, hash_sig, NULL, 0, dissect_image_flags, &decrypted_image);
+        if (r < 0) {
+                if (error_path)
+                        *error_path = strdup("Failed to decrypt dissected image");
+                return r;
+        }
+
+        r = mkdir_p_label(dest, 0755);
+        if (r < 0) {
+                if (error_path)
+                        *error_path = strjoin("Failed to create destination directory ", dest);
+                return r;
+        }
+        r = umount_recursive(dest, 0);
+        if (r < 0) {
+                if (error_path)
+                        *error_path = strjoin("Failed to umount under destination directory ", dest);
+                return r;
+        }
+
+        r = dissected_image_mount(dissected_image, dest, UID_INVALID, dissect_image_flags);
+        if (r < 0) {
+                if (error_path)
+                        *error_path = strjoin("Failed to mount image ", src);
+                return r;
+        }
+
+        if (decrypted_image) {
+                r = decrypted_image_relinquish(decrypted_image);
+                if (r < 0) {
+                        if (error_path)
+                                *error_path = strdup("Failed to relinquish decrypted image");
+                        return r;
+                }
+        }
+
+        loop_device_relinquish(loop_device);
+
+        return 0;
+}
 
 DEFINE_STRING_TABLE_LOOKUP(partition_designator, int);
