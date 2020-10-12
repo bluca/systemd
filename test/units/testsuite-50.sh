@@ -237,6 +237,25 @@ EOF
 systemctl start testservice-50e.service
 systemctl is-active testservice-50e.service
 
+cat > /run/systemd/system/testservice-50f.service <<EOF
+[Service]
+RuntimeMaxSec=300
+Type=notify
+RemainAfterExit=yes
+MountAPIVFS=yes
+PrivateTmp=yes
+ExecStart=/bin/sh -c 'systemd-notify --ready; while ! grep -q -F MARKER /etc/systemd/system/some_file; do sleep 0.1; done; while ! grep -q -F MARKER /etc/systemd/system/other_file; do sleep 0.1; done'
+EOF
+systemctl start testservice-50f.service
+
+systemctl mount-image testservice-50f.service /usr/share/app0.raw
+systemctl mount-image testservice-50f.service /usr/share/app1.raw
+
+while systemctl show -P SubState testservice-50f.service | grep -q running
+do
+    sleep 0.1
+done
+
 echo OK >/testok
 
 exit 0
