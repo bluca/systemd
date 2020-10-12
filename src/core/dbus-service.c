@@ -178,7 +178,7 @@ int bus_service_method_mount_image(sd_bus_message *message, void *userdata, sd_b
         if (!path_is_absolute(src) || !path_is_normalized(src))
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Source path must be absolute and not contain ../.");
 
-        if (!path_is_absolute(dest) || !path_is_normalized(dest))
+        if (!isempty(dest) && (!path_is_absolute(dest) || !path_is_normalized(dest)))
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Destination path must be absolute and not contain ../.");
 
         r = bus_read_mount_options(message, error, &options, NULL, "");

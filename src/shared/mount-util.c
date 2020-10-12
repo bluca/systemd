@@ -874,7 +874,6 @@ int mount_image_in_namespace(
         assert(propagate_path);
         assert(incoming_path);
         assert(src);
-        assert(dest);
 
         r = namespace_open(target, NULL, &mntns_fd, NULL, NULL, &root_fd);
         if (r < 0)
@@ -991,6 +990,16 @@ int mount_image_in_namespace(
 
         mount_outside_created = true;
 
+        /* Overlay mount? We need an additional scratch directory inside the namespace, for the image */
+        if (isempty(dest)) {
+                r = mkdir_errno_wrapper(strjoina(mount_outside, "-inside"), 0700);
+                if (r < 0) {
+                        if (error_path)
+                                *error_path = strjoin("Cannot create propagation file or directory ", mount_outside, "-inside");
+                        goto finish;
+                }
+        }
+
         if (mount(mount_tmp, mount_outside, NULL, MS_MOVE, NULL) < 0) {
                 r = -errno;
                 if (error_path)
@@ -1026,18 +1035,67 @@ int mount_image_in_namespace(
                 goto finish;
         }
         if (r == 0) {
+                _cleanup_strv_free_ char **mounts_list = NULL, **overlays_list = NULL;
                 const char *mount_inside;
+                char **q;
 
                 errno_pipe_fd[0] = safe_close(errno_pipe_fd[0]);
 
-                if (make_file_or_directory)
+                mount_inside = strjoina(incoming_path, basename(mount_outside));
+
+                /* Overlay mount? Move the image but keep it in the incoming directory */
+                if (isempty(dest)) {
+                        r = path_compute_overlays("/", mount_inside, &mounts_list, &overlays_list);
+                        if (r < 0)
+                                goto child_fail;
+
+                        dest = strjoina(mount_inside, "-inside");
+                } else if (make_file_or_directory)
                         (void) mkdir_p(dest, 0755);
 
                 /* Fourth, move the mount to the right place inside */
-                mount_inside = strjoina(incoming_path, basename(mount_outside));
                 if (mount(mount_inside, dest, NULL, MS_MOVE, NULL) < 0) {
                         r = -errno;
                         goto child_fail;
+                }
+
+                STRV_FOREACH(q, mounts_list) {
+                        _cleanup_free_ char *s = NULL;
+
+                        s = path_join(dest, *q);
+                        if (!s) {
+                                r = -ENOMEM;
+                                goto child_fail;
+                        }
+
+                        r = mount(s, *q, NULL, MS_BIND, NULL);
+                        if (r < 0) {
+                                r = -errno;
+                                goto child_fail;
+                        }
+                }
+
+                STRV_FOREACH(q, overlays_list) {
+                        _cleanup_free_ char *s = NULL, *overlay_options = NULL;
+
+                        s = path_join(dest, *q);
+                        if (!s) {
+                                r = -ENOMEM;
+                                goto child_fail;
+                        }
+
+                        /* We only support read-only overlays, so no upper nor work directories */
+                        overlay_options = strjoin("lowerdir=", s, ":", *q);
+                        if (!overlay_options) {
+                                r = -ENOMEM;
+                                goto child_fail;
+                        }
+
+                        r = mount("overlay", *q, "overlay", MS_RDONLY, overlay_options);
+                        if (r < 0) {
+                                r = -errno;
+                                goto child_fail;
+                        }
                 }
 
                 _exit(EXIT_SUCCESS);
