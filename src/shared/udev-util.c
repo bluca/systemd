@@ -170,8 +170,9 @@ static int device_wait_for_initialization_internal(
                 sd_device *_device,
                 const char *devlink,
                 const char *subsystem,
-                usec_t timeout,
+                usec_t deadline,
                 sd_device **ret) {
+
         _cleanup_(sd_device_monitor_unrefp) sd_device_monitor *monitor = NULL;
         _cleanup_(sd_event_source_unrefp) sd_event_source *timeout_source = NULL;
         _cleanup_(sd_event_unrefp) sd_event *event = NULL;
@@ -231,10 +232,11 @@ static int device_wait_for_initialization_internal(
         if (r < 0)
                 return log_error_errno(r, "Failed to start device monitor: %m");
 
-        if (timeout != USEC_INFINITY) {
-                r = sd_event_add_time(event, &timeout_source,
-                                      CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + timeout, 0,
-                                      device_timeout_handler, NULL);
+        if (deadline != USEC_INFINITY) {
+                r = sd_event_add_time(
+                                event, &timeout_source,
+                                CLOCK_MONOTONIC, deadline, 0,
+                                device_timeout_handler, NULL);
                 if (r < 0)
                         return log_error_errno(r, "Failed to add timeout event source: %m");
         }
@@ -261,12 +263,12 @@ static int device_wait_for_initialization_internal(
         return 0;
 }
 
-int device_wait_for_initialization(sd_device *device, const char *subsystem, usec_t timeout, sd_device **ret) {
-        return device_wait_for_initialization_internal(device, NULL, subsystem, timeout, ret);
+int device_wait_for_initialization(sd_device *device, const char *subsystem, usec_t deadline, sd_device **ret) {
+        return device_wait_for_initialization_internal(device, NULL, subsystem, deadline, ret);
 }
 
-int device_wait_for_devlink(const char *devlink, const char *subsystem, usec_t timeout, sd_device **ret) {
-        return device_wait_for_initialization_internal(NULL, devlink, subsystem, timeout, ret);
+int device_wait_for_devlink(const char *devlink, const char *subsystem, usec_t deadline, sd_device **ret) {
+        return device_wait_for_initialization_internal(NULL, devlink, subsystem, deadline, ret);
 }
 
 int device_is_renaming(sd_device *dev) {
