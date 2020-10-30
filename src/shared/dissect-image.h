@@ -59,12 +59,16 @@ typedef enum DissectImageFlags {
         DISSECT_IMAGE_MOUNT_NON_ROOT_ONLY = 1 << 7,  /* Mount only non-root partitions */
         DISSECT_IMAGE_VALIDATE_OS         = 1 << 8,  /* Refuse mounting images that aren't identifiable as OS images */
         DISSECT_IMAGE_NO_UDEV             = 1 << 9,  /* Don't wait for udev initializing things */
+        DISSECT_IMAGE_RELAX_VAR_CHECK     = 1 << 10, /* Don't insist that the UUID of /var is hashed from /etc/machine-id */
+        DISSECT_IMAGE_FSCK                = 1 << 11, /* File system check the partition before mounting (no effect when combined with DISSECT_IMAGE_READ_ONLY) */
+        DISSECT_IMAGE_NO_PARTITION_TABLE  = 1 << 12, /* Only recognize single file system images */
 } DissectImageFlags;
 
 struct DissectedImage {
         bool encrypted:1;
         bool verity:1;     /* verity available and usable */
         bool can_verity:1; /* verity available, but not necessarily used */
+        bool single_file_system:1; /* MBR/GPT or single file system */
 
         DissectedPartition partitions[_PARTITION_DESIGNATOR_MAX];
 
@@ -75,14 +79,14 @@ struct DissectedImage {
 };
 
 int probe_filesystem(const char *node, char **ret_fstype);
-int dissect_image(int fd, const void *root_hash, size_t root_hash_size, DissectImageFlags flags, DissectedImage **ret);
-int dissect_image_and_warn(int fd, const char *name, const void *root_hash, size_t root_hash_size, DissectImageFlags flags, DissectedImage **ret);
+int dissect_image(int fd, const void *root_hash, size_t root_hash_size, const char *verity_data, DissectImageFlags flags, DissectedImage **ret);
+int dissect_image_and_warn(int fd, const char *name, const void *root_hash, size_t root_hash_size, const char *verity_data, DissectImageFlags flags, DissectedImage **ret);
 
 DissectedImage* dissected_image_unref(DissectedImage *m);
 DEFINE_TRIVIAL_CLEANUP_FUNC(DissectedImage*, dissected_image_unref);
 
-int dissected_image_decrypt(DissectedImage *m, const char *passphrase, const void *root_hash, size_t root_hash_size, DissectImageFlags flags, DecryptedImage **ret);
-int dissected_image_decrypt_interactively(DissectedImage *m, const char *passphrase, const void *root_hash, size_t root_hash_size, DissectImageFlags flags, DecryptedImage **ret);
+int dissected_image_decrypt(DissectedImage *m, const char *passphrase, const void *root_hash, size_t root_hash_size, const char *verity_data, DissectImageFlags flags, DecryptedImage **ret);
+int dissected_image_decrypt_interactively(DissectedImage *m, const char *passphrase, const void *root_hash, size_t root_hash_size, const char *verity_data, DissectImageFlags flags, DecryptedImage **ret);
 int dissected_image_mount(DissectedImage *m, const char *dest, uid_t uid_shift, DissectImageFlags flags);
 
 int dissected_image_acquire_metadata(DissectedImage *m);
@@ -94,4 +98,6 @@ int decrypted_image_relinquish(DecryptedImage *d);
 const char* partition_designator_to_string(int i) _const_;
 int partition_designator_from_string(const char *name) _pure_;
 
-int root_hash_load(const char *image, void **ret, size_t *ret_size);
+int verity_metadata_load(const char *image, void **ret_roothash, size_t *ret_roothash_size, char **ret_verity_data);
+bool dissected_image_can_do_verity(const DissectedImage *image, unsigned partition_designator);
+bool dissected_image_has_verity(const DissectedImage *image, unsigned partition_designator);
