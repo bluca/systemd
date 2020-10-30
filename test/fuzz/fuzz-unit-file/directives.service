@@ -195,6 +195,7 @@ RootDirectory=
 RootDirectoryStartOnly=
 RootImage=
 RootHash=
+RootHashSignature=
 RootVerity=
 RuntimeMaxSec=
 SELinuxContextFromNet=

@@ -988,6 +988,9 @@ if want_libcryptsetup != 'false' and not skip_deps
                                    version : '>= 2.0.1',
                                    required : want_libcryptsetup == 'true')
         have = libcryptsetup.found()
+
+        conf.set10('HAVE_CRYPT_ACTIVATE_BY_SIGNED_KEY',
+                   have and cc.has_function('crypt_activate_by_signed_key', dependencies : libcryptsetup))
 else
         have = false
         libcryptsetup = []
