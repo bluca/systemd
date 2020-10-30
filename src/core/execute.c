@@ -1861,6 +1861,9 @@ static bool exec_needs_mount_namespace(
         if (context->n_temporary_filesystems > 0)
                 return true;
 
+        if (context->n_mount_images > 0)
+                return true;
+
         if (!IN_SET(context->mount_flags, 0, MS_SHARED))
                 return true;
 
@@ -2482,6 +2485,9 @@ static bool insist_on_sandboxing(
         if (root_dir || root_image)
                 return true;
 
+        if (context->n_mount_images > 0)
+                return true;
+
         if (context->dynamic_user)
                 return true;
 
@@ -2572,6 +2578,8 @@ static int apply_mount_namespace(
                             n_bind_mounts,
                             context->temporary_filesystems,
                             context->n_temporary_filesystems,
+                            context->mount_images,
+                            context->n_mount_images,
                             tmp,
                             var,
                             needs_sandboxing ? context->protect_home : PROTECT_HOME_NO,
@@ -4047,6 +4055,7 @@ void exec_context_done(ExecContext *c) {
         temporary_filesystem_free_many(c->temporary_filesystems, c->n_temporary_filesystems);
         c->temporary_filesystems = NULL;
         c->n_temporary_filesystems = 0;
+        c->mount_images = mount_image_free_many(c->mount_images, &c->n_mount_images);
 
         cpu_set_reset(&c->cpu_set);
         numa_policy_reset(&c->numa_policy);
@@ -4830,6 +4839,12 @@ void exec_context_dump(const ExecContext *c, FILE* f, const char *prefix) {
                 else
                         fprintf(f, "%d\n", c->syscall_errno);
         }
+
+        for (i = 0; i < c->n_mount_images; i++)
+                fprintf(f, "%sMountImages: %s%s:%s\n", prefix,
+                        c->mount_images[i].ignore_enoent ? "-": "",
+                        c->mount_images[i].source,
+                        c->mount_images[i].destination);
 }
 
 bool exec_context_maintains_privileges(const ExecContext *c) {
