@@ -398,6 +398,7 @@ static int maybe_enable_disable(sd_bus *bus, const char *path, bool enable) {
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_strv_free_ char **names = NULL;
         UnitFileChange *changes = NULL;
+        const uint64_t flags = UNIT_FILE_PORTABLE | (arg_runtime ? UNIT_FILE_RUNTIME : 0);
         size_t n_changes = 0;
         int r;
 
@@ -414,7 +415,7 @@ static int maybe_enable_disable(sd_bus *bus, const char *path, bool enable) {
                 "org.freedesktop.systemd1",
                 "/org/freedesktop/systemd1",
                 "org.freedesktop.systemd1.Manager",
-                enable ? "EnableUnitFiles" : "DisableUnitFiles");
+                enable ? "EnableUnitFilesWithFlags" : "DisableUnitFilesWithFlags");
         if (r < 0)
                 return bus_log_create_error(r);
 
@@ -422,15 +423,9 @@ static int maybe_enable_disable(sd_bus *bus, const char *path, bool enable) {
         if (r < 0)
                 return bus_log_create_error(r);
 
-        r = sd_bus_message_append(m, "b", arg_runtime);
+        r = sd_bus_message_append(m, "t", flags);
         if (r < 0)
                 return bus_log_create_error(r);
-
-        if (enable) {
-                r = sd_bus_message_append(m, "b", false);
-                if (r < 0)
-                        return bus_log_create_error(r);
-        }
 
         r = sd_bus_call(bus, m, 0, &error, &reply);
         if (r < 0)
