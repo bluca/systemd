@@ -1087,6 +1087,8 @@ static int decrypt_partition(
         if (r < 0)
                 return log_debug_errno(r, "Failed to initialize dm-crypt: %m");
 
+        cryptsetup_enable_logging(cd);
+
         r = crypt_load(cd, CRYPT_LUKS, NULL);
         if (r < 0)
                 return log_debug_errno(r, "Failed to load LUKS metadata: %m");
@@ -1207,6 +1209,8 @@ static int verity_partition(
         if (r < 0)
                 return r;
 
+        cryptsetup_enable_logging(cd);
+
         r = crypt_load(cd, CRYPT_VERITY, NULL);
         if (r < 0)
                 return r;
@@ -1236,28 +1240,44 @@ static int verity_partition(
                  * Improvements in libcrypsetup can ensure this never happens: https://gitlab.com/cryptsetup/cryptsetup/-/merge_requests/96 */
                 if (r == -EINVAL && FLAGS_SET(flags, DISSECT_IMAGE_VERITY_SHARE))
                         return verity_partition(m, v, root_hash, root_hash_size, verity_data, NULL, root_hash_sig ?: hash_sig_from_file, root_hash_sig_size, flags & ~DISSECT_IMAGE_VERITY_SHARE, d);
-                if (!IN_SET(r, 0, -EEXIST, -ENODEV))
+                if (!IN_SET(r,
+                            0, /* Success */
+                            -EEXIST, /* Volume is already open and ready to be used */
+                            -EBUSY, /* Volume is being opened but not ready, crypt_init_by_name can fetch details */
+                            -ENODEV /* Volume is being opened but not ready, crypt_init_by_name would fail, try to open again */))
                         return r;
-                if (r == -EEXIST) {
+                if (IN_SET(r, -EEXIST, -EBUSY)) {
                         struct crypt_device *existing_cd = NULL;
 
                         if (!restore_deferred_remove){
                                 /* To avoid races, disable automatic removal on umount while setting up the new device. Restore it on failure. */
                                 r = dm_deferred_remove_cancel(name);
-                                if (r < 0)
+                                /* If activation returns EBUSY there might be no deferred removal to cancel, that's fine */
+                                if (r < 0 && r != -ENXIO)
                                         return log_debug_errno(r, "Disabling automated deferred removal for verity device %s failed: %m", node);
-                                restore_deferred_remove = strdup(name);
-                                if (!restore_deferred_remove)
-                                        return -ENOMEM;
+                                if (r == 0) {
+                                        restore_deferred_remove = strdup(name);
+                                        if (!restore_deferred_remove)
+                                                return -ENOMEM;
+                                }
                         }
 
                         r = verity_can_reuse(root_hash, root_hash_size, !!root_hash_sig || !!hash_sig_from_file, name, &existing_cd);
                         /* Same as above, -EINVAL can randomly happen when it actually means -EEXIST */
                         if (r == -EINVAL && FLAGS_SET(flags, DISSECT_IMAGE_VERITY_SHARE))
                                 return verity_partition(m, v, root_hash, root_hash_size, verity_data, NULL, root_hash_sig ?: hash_sig_from_file, root_hash_sig_size, flags & ~DISSECT_IMAGE_VERITY_SHARE, d);
-                        if (!IN_SET(r, 0, -ENODEV, -ENOENT))
+                        if (!IN_SET(r, 0, -ENODEV, -ENOENT, -EBUSY))
                                 return log_debug_errno(r, "Checking whether existing verity device %s can be reused failed: %m", node);
                         if (r == 0) {
+                                /* devmapper might say that the device exists, but the devlink might not yet have been
+                                 * created. Check and wait for the udev event in that case. */
+                                r = device_wait_for_devlink(node, "block", 100 * USEC_PER_MSEC, NULL);
+                                /* Fallback to activation with a unique device if it's taking too long */
+                                if (r == -ETIMEDOUT)
+                                        break;
+                                if (r < 0)
+                                        return r;
+
                                 if (cd)
                                         crypt_free(cd);
                                 cd = existing_cd;
@@ -1265,12 +1285,11 @@ static int verity_partition(
                 }
                 if (r == 0)
                         break;
+
+                /* Device is being opened by another process, but it has not finished yet, yield for 2ms */
+                (void) usleep(2 * USEC_PER_MSEC);
         }
 
-        /* Sanity check: libdevmapper is known to report that the device already exists and is active,
-        * but it's actually not there, so the later filesystem probe or mount would fail. */
-        if (r == 0)
-                r = access(node, F_OK);
         /* An existing verity device was reported by libcryptsetup/libdevmapper, but we can't use it at this time.
          * Fall back to activating it with a unique device name. */
         if (r != 0 && FLAGS_SET(flags, DISSECT_IMAGE_VERITY_SHARE))
