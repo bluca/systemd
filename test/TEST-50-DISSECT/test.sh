@@ -10,6 +10,7 @@ TEST_NO_NSPAWN=1
 
 command -v mksquashfs >/dev/null 2>&1 || exit 0
 command -v veritysetup >/dev/null 2>&1 || exit 0
+command -v sfdisk >/dev/null 2>&1 || exit 0
 
 test_setup() {
     create_empty_image_rootdir
@@ -38,8 +39,27 @@ EOF
         instmods loop =block
         instmods squashfs =squashfs
         instmods dm_verity =md
+        install_dmevent
         generate_module_dependencies
         inst_binary mktemp
+        inst_binary sfdisk
+        inst_binary losetup
+        inst_binary uname
+        inst_binary cut
+        inst_binary dd
+
+        BASICTOOLS="bash cat mount"
+        oldinitdir=$initdir
+        export initdir=$TESTDIR/minimal
+        mkdir -p $initdir
+        setup_basic_dirs
+        install_basic_tools
+        inst /usr/lib/os-release
+        ln -s ../usr/lib/os-release $initdir/etc/os-release
+        echo MARKER=1 >> $initdir/usr/lib/os-release
+        mksquashfs $initdir $oldinitdir/usr/share/minimal.raw
+        veritysetup format $oldinitdir/usr/share/minimal.raw $oldinitdir/usr/share/minimal.verity | grep '^Root hash:' | cut -f2 | tr -d '\n' > $oldinitdir/usr/share/minimal.roothash
+        export initdir=$oldinitdir
     )
     setup_nspawn_root
 }

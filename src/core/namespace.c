@@ -1178,6 +1178,7 @@ static void normalize_mounts(const char *root_directory, MountEntry *mounts, siz
 int setup_namespace(
                 const char* root_directory,
                 const char* root_image,
+                const MountOptions *root_image_options,
                 const NamespaceInfo *ns_info,
                 char** read_write_paths,
                 char** read_only_paths,
@@ -1237,7 +1238,7 @@ int setup_namespace(
                         return log_debug_errno(r, "Failed to load root hash: %m");
                 dissect_image_flags |= root_verity || verity_data ? DISSECT_IMAGE_NO_PARTITION_TABLE : 0;
 
-                r = dissect_image(loop_device->fd, root_hash ?: root_hash_decoded, root_hash_size, root_verity ?: verity_data, dissect_image_flags, &dissected_image);
+                r = dissect_image(loop_device->fd, root_hash ?: root_hash_decoded, root_hash_size, root_verity ?: verity_data, root_image_options, dissect_image_flags, &dissected_image);
                 if (r < 0)
                         return log_debug_errno(r, "Failed to dissect image: %m");
 
