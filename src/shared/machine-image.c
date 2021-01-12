@@ -414,7 +414,11 @@ static int image_make(
         return -EMEDIUMTYPE;
 }
 
-int image_find(ImageClass class, const char *name, Image **ret) {
+int image_find(ImageClass class,
+               const char *name,
+               const char *root,
+               Image **ret) {
+
         const char *path;
         int r;
 
@@ -427,20 +431,22 @@ int image_find(ImageClass class, const char *name, Image **ret) {
                 return -ENOENT;
 
         NULSTR_FOREACH(path, image_search_path[class]) {
+                _cleanup_free_ char *resolved = NULL;
                 _cleanup_closedir_ DIR *d = NULL;
                 struct stat st;
+                int flags;
 
-                d = opendir(path);
-                if (!d) {
-                        if (errno == ENOENT)
-                                continue;
+                r = chase_symlinks_and_opendir(path, root, CHASE_PREFIX_ROOT, &resolved, &d);
+                if (r == -ENOENT)
+                        continue;
+                if (r < 0)
+                        return r;
 
-                        return -errno;
-                }
-
-                /* As mentioned above, we follow symlinks on this fstatat(), because we want to permit people to
-                 * symlink block devices into the search path */
-                if (fstatat(dirfd(d), name, &st, 0) < 0) {
+                /* As mentioned above, we follow symlinks on this fstatat(), because we want to permit people
+                 * to symlink block devices into the search path. (For now, we disable that when operating
+                 * relative to some root directory.) */
+                flags = root ? AT_SYMLINK_NOFOLLOW : 0;
+                if (fstatat(dirfd(d), name, &st, flags) < 0) {
                         _cleanup_free_ char *raw = NULL;
 
                         if (errno != ENOENT)
@@ -450,8 +456,7 @@ int image_find(ImageClass class, const char *name, Image **ret) {
                         if (!raw)
                                 return -ENOMEM;
 
-                        if (fstatat(dirfd(d), raw, &st, 0) < 0) {
-
+                        if (fstatat(dirfd(d), raw, &st, flags) < 0) {
                                 if (errno == ENOENT)
                                         continue;
 
@@ -461,13 +466,13 @@ int image_find(ImageClass class, const char *name, Image **ret) {
                         if (!S_ISREG(st.st_mode))
                                 continue;
 
-                        r = image_make(name, dirfd(d), path, raw, &st, ret);
+                        r = image_make(name, dirfd(d), resolved, raw, &st, ret);
 
                 } else {
                         if (!S_ISDIR(st.st_mode) && !S_ISBLK(st.st_mode))
                                 continue;
 
-                        r = image_make(name, dirfd(d), path, name, &st, ret);
+                        r = image_make(name, dirfd(d), resolved, name, &st, ret);
                 }
                 if (IN_SET(r, -ENOENT, -EMEDIUMTYPE))
                         continue;
@@ -481,7 +486,7 @@ int image_find(ImageClass class, const char *name, Image **ret) {
         }
 
         if (class == IMAGE_MACHINE && streq(name, ".host")) {
-                r = image_make(".host", AT_FDCWD, NULL, "/", NULL, ret);
+                r = image_make(".host", AT_FDCWD, NULL, empty_to_root(root), NULL, ret);
                 if (r < 0)
                         return r;
 
@@ -506,14 +511,18 @@ int image_from_path(const char *path, Image **ret) {
         return image_make(NULL, AT_FDCWD, NULL, path, NULL, ret);
 }
 
-int image_find_harder(ImageClass class, const char *name_or_path, Image **ret) {
+int image_find_harder(ImageClass class, const char *name_or_path, const char *root, Image **ret) {
         if (image_name_is_valid(name_or_path))
-                return image_find(class, name_or_path, ret);
+                return image_find(class, name_or_path, root, ret);
 
         return image_from_path(name_or_path, ret);
 }
 
-int image_discover(ImageClass class, Hashmap *h) {
+int image_discover(
+                ImageClass class,
+                const char *root,
+                Hashmap *h) {
+
         const char *path;
         int r;
 
@@ -522,29 +531,30 @@ int image_discover(ImageClass class, Hashmap *h) {
         assert(h);
 
         NULSTR_FOREACH(path, image_search_path[class]) {
+                _cleanup_free_ char *resolved = NULL;
                 _cleanup_closedir_ DIR *d = NULL;
                 struct dirent *de;
 
-                d = opendir(path);
-                if (!d) {
-                        if (errno == ENOENT)
-                                continue;
-
-                        return -errno;
-                }
+                r = chase_symlinks_and_opendir(path, root, CHASE_PREFIX_ROOT, &resolved, &d);
+                if (r == -ENOENT)
+                        continue;
+                if (r < 0)
+                        return r;
 
                 FOREACH_DIRENT_ALL(de, d, return -errno) {
                         _cleanup_(image_unrefp) Image *image = NULL;
                         _cleanup_free_ char *truncated = NULL;
                         const char *pretty;
                         struct stat st;
+                        int flags;
 
                         if (dot_or_dot_dot(de->d_name))
                                 continue;
 
-                        /* As mentioned above, we follow symlinks on this fstatat(), because we want to permit people
-                         * to symlink block devices into the search path */
-                        if (fstatat(dirfd(d), de->d_name, &st, 0) < 0) {
+                        /* As mentioned above, we follow symlinks on this fstatat(), because we want to
+                         * permit people to symlink block devices into the search path. */
+                        flags = root ? AT_SYMLINK_NOFOLLOW : 0;
+                        if (fstatat(dirfd(d), de->d_name, &st, flags) < 0) {
                                 if (errno == ENOENT)
                                         continue;
 
@@ -574,7 +584,7 @@ int image_discover(ImageClass class, Hashmap *h) {
                         if (hashmap_contains(h, pretty))
                                 continue;
 
-                        r = image_make(pretty, dirfd(d), path, de->d_name, &st, &image);
+                        r = image_make(pretty, dirfd(d), resolved, de->d_name, &st, &image);
                         if (IN_SET(r, -ENOENT, -EMEDIUMTYPE))
                                 continue;
                         if (r < 0)
@@ -593,7 +603,7 @@ int image_discover(ImageClass class, Hashmap *h) {
         if (class == IMAGE_MACHINE && !hashmap_contains(h, ".host")) {
                 _cleanup_(image_unrefp) Image *image = NULL;
 
-                r = image_make(".host", AT_FDCWD, NULL, "/", NULL, &image);
+                r = image_make(".host", AT_FDCWD, NULL, empty_to_root("/"), NULL, &image);
                 if (r < 0)
                         return r;
 
@@ -736,7 +746,7 @@ int image_rename(Image *i, const char *new_name) {
         if (r < 0)
                 return r;
 
-        r = image_find(IMAGE_MACHINE, new_name, NULL);
+        r = image_find(IMAGE_MACHINE, new_name, NULL, NULL);
         if (r >= 0)
                 return -EEXIST;
         if (r != -ENOENT)
@@ -849,7 +859,7 @@ int image_clone(Image *i, const char *new_name, bool read_only) {
         if (r < 0)
                 return r;
 
-        r = image_find(IMAGE_MACHINE, new_name, NULL);
+        r = image_find(IMAGE_MACHINE, new_name, NULL, NULL);
         if (r >= 0)
                 return -EEXIST;
         if (r != -ENOENT)
@@ -1241,16 +1251,27 @@ bool image_name_is_valid(const char *s) {
         return true;
 }
 
-bool image_in_search_path(ImageClass class, const char *image) {
+bool image_in_search_path(
+                ImageClass class,
+                const char *root,
+                const char *image) {
+
         const char *path;
 
         assert(image);
 
         NULSTR_FOREACH(path, image_search_path[class]) {
-                const char *p;
+                const char *p, *q;
                 size_t k;
 
-                p = path_startswith(image, path);
+                if (!empty_or_root(root)) {
+                        q = path_startswith(path, root);
+                        if (!q)
+                                continue;
+                } else
+                        q = path;
+
+                p = path_startswith(q, path);
                 if (!p)
                         continue;
 
