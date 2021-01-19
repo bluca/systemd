@@ -56,3 +56,7 @@ int getenv_bool_secure(const char *p);
 
 /* Like setenv, but calls unsetenv if value == NULL. */
 int set_unset_env(const char *name, const char *value, bool overwrite);
+
+/* Parses and does sanity checks on an environment variable containing
+ * PATH-like colon-separated absolute paths */
+int getenv_path_list(const char *name, char ***ret_paths);
