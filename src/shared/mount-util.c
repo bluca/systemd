@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <errno.h>
+#include <linux/loop.h>
 #include <stdlib.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
@@ -8,6 +9,7 @@
 #include <unistd.h>
 
 #include "alloc-util.h"
+#include "dissect-image.h"
 #include "extract-word.h"
 #include "fd-util.h"
 #include "fileio.h"
@@ -27,6 +29,7 @@
 #include "string-util.h"
 #include "strv.h"
 #include "tmpfile-util.h"
+#include "user-util.h"
 
 int mount_fd(const char *source,
              int target_fd,
@@ -747,14 +750,16 @@ int mount_option_mangle(
         return 0;
 }
 
-int bind_mount_in_namespace(
+static int mount_in_namespace(
                 pid_t target,
                 const char *propagate_path,
                 const char *incoming_path,
                 const char *src,
                 const char *dest,
                 bool read_only,
-                bool make_file_or_directory) {
+                bool make_file_or_directory,
+                const MountOptions *options,
+                bool is_image) {
 
         _cleanup_close_pair_ int errno_pipe_fd[2] = { -1, -1 };
         _cleanup_close_ int self_mntns_fd = -1, mntns_fd = -1, root_fd = -1, pidns_fd = -1, chased_src_fd = -1;
@@ -772,6 +777,7 @@ int bind_mount_in_namespace(
         assert(incoming_path);
         assert(src);
         assert(dest);
+        assert(!options || is_image);
 
         r = namespace_open(target, &pidns_fd, &mntns_fd, NULL, NULL, &root_fd);
         if (r < 0)
@@ -836,7 +842,7 @@ int bind_mount_in_namespace(
 
         /* Second, we mount the source file or directory to a directory inside of our MS_SLAVE playground. */
         mount_tmp = strjoina(mount_slave, "/mount");
-        if (S_ISDIR(st.st_mode))
+        if (is_image || S_ISDIR(st.st_mode))
                 r = mkdir_errno_wrapper(mount_tmp, 0700);
         else
                 r = touch(mount_tmp);
@@ -847,7 +853,10 @@ int bind_mount_in_namespace(
 
         mount_tmp_created = true;
 
-        r = mount_follow_verbose(LOG_DEBUG, chased_src, mount_tmp, NULL, MS_BIND, NULL);
+        if (is_image)
+                r = verity_dissect_and_mount(chased_src, mount_tmp, options);
+        else
+                r = mount_follow_verbose(LOG_DEBUG, chased_src, mount_tmp, NULL, MS_BIND, NULL);
         if (r < 0)
                 goto finish;
 
@@ -864,7 +873,7 @@ int bind_mount_in_namespace(
          * right-away. */
 
         mount_outside = strjoina(propagate_path, "/XXXXXX");
-        if (S_ISDIR(st.st_mode))
+        if (is_image || S_ISDIR(st.st_mode))
                 r = mkdtemp(mount_outside) ? 0 : -errno;
         else {
                 r = mkostemp_safe(mount_outside);
@@ -884,7 +893,7 @@ int bind_mount_in_namespace(
         mount_outside_mounted = true;
         mount_tmp_mounted = false;
 
-        if (S_ISDIR(st.st_mode))
+        if (is_image || S_ISDIR(st.st_mode))
                 (void) rmdir(mount_tmp);
         else
                 (void) unlink(mount_tmp);
@@ -911,7 +920,7 @@ int bind_mount_in_namespace(
                 errno_pipe_fd[0] = safe_close(errno_pipe_fd[0]);
 
                 if (make_file_or_directory) {
-                        if (S_ISDIR(st.st_mode))
+                        if (is_image || S_ISDIR(st.st_mode))
                                 (void) mkdir_p(dest, 0755);
                         else {
                                 (void) mkdir_parents(dest, 0755);
@@ -953,7 +962,7 @@ finish:
         if (mount_outside_mounted)
                 (void) umount_verbose(LOG_DEBUG, mount_outside, UMOUNT_NOFOLLOW);
         if (mount_outside_created) {
-                if (S_ISDIR(st.st_mode))
+                if (is_image || S_ISDIR(st.st_mode))
                         (void) rmdir(mount_outside);
                 else
                         (void) unlink(mount_outside);
@@ -962,7 +971,7 @@ finish:
         if (mount_tmp_mounted)
                 (void) umount_verbose(LOG_DEBUG, mount_tmp, UMOUNT_NOFOLLOW);
         if (mount_tmp_created) {
-                if (S_ISDIR(st.st_mode))
+                if (is_image || S_ISDIR(st.st_mode))
                         (void) rmdir(mount_tmp);
                 else
                         (void) unlink(mount_tmp);
@@ -974,4 +983,29 @@ finish:
                 (void) rmdir(mount_slave);
 
         return r;
+}
+
+int bind_mount_in_namespace(
+                pid_t target,
+                const char *propagate_path,
+                const char *incoming_path,
+                const char *src,
+                const char *dest,
+                bool read_only,
+                bool make_file_or_directory) {
+
+        return mount_in_namespace(target, propagate_path, incoming_path, src, dest, read_only, make_file_or_directory, NULL, false);
+}
+
+int mount_image_in_namespace(
+                pid_t target,
+                const char *propagate_path,
+                const char *incoming_path,
+                const char *src,
+                const char *dest,
+                bool read_only,
+                bool make_file_or_directory,
+                const MountOptions *options) {
+
+        return mount_in_namespace(target, propagate_path, incoming_path, src, dest, read_only, make_file_or_directory, options, true);
 }
