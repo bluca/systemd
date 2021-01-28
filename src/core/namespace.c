@@ -68,6 +68,8 @@ typedef struct MountEntry {
         bool nosuid:1;            /* Shall set MS_NOSUID on the mount itself */
         bool applied:1;           /* Already applied */
         char *path_malloc;        /* Use this instead of 'path_const' if we had to allocate memory */
+        const char *unprefixed_path_const; /* If the path was amended with a prefix, these will save the original */
+        char *unprefixed_path_malloc;
         const char *source_const; /* The source path, for bind mounts or images */
         char *source_malloc;
         const char *options_const;/* Mount options for tmpfs */
@@ -225,6 +227,29 @@ static const char *mount_entry_path(const MountEntry *p) {
         return p->path_malloc ?: p->path_const;
 }
 
+static const char *mount_entry_unprefixed_path(const MountEntry *p) {
+        assert(p);
+
+        /* Returns the unprefixed path (ie: before prefix_where_needed() ran), if any */
+
+        return p->unprefixed_path_malloc ?: p->unprefixed_path_const ?: mount_entry_path(p);
+}
+
+static void mount_entry_consume_prefix(MountEntry *p, char *new_path) {
+        assert(p);
+        assert(p->path_malloc || p->path_const);
+        assert(new_path);
+
+        /* Saves current path in unprefixed_ variable, and takes over new_path */
+
+        free_and_replace(p->unprefixed_path_malloc, p->path_malloc);
+        /* If we didn't have a path on the heap, then it's a static one */
+        if (!p->unprefixed_path_malloc)
+                p->unprefixed_path_const = p->path_const;
+        p->path_malloc = new_path;
+        p->has_prefix = true;
+}
+
 static bool mount_entry_read_only(const MountEntry *p) {
         assert(p);
 
@@ -247,6 +272,7 @@ static void mount_entry_done(MountEntry *p) {
         assert(p);
 
         p->path_malloc = mfree(p->path_malloc);
+        p->unprefixed_path_malloc = mfree(p->unprefixed_path_malloc);
         p->source_malloc = mfree(p->source_malloc);
         p->options_malloc = mfree(p->options_malloc);
         p->image_options = mount_options_free_all(p->image_options);
@@ -478,8 +504,7 @@ static int prefix_where_needed(MountEntry *m, size_t n, const char *root_directo
                 if (!s)
                         return -ENOMEM;
 
-                free_and_replace(m[i].path_malloc, s);
-                m[i].has_prefix = true;
+                mount_entry_consume_prefix(&m[i], s);
         }
 
         return 0;
@@ -921,7 +946,7 @@ static int mount_tmpfs(const MountEntry *m) {
         assert(m);
 
         entry_path = mount_entry_path(m);
-        inner_path = m->path_const;
+        inner_path = mount_entry_unprefixed_path(m);
 
         /* First, get rid of everything that is below if there is anything. Then, overmount with our new tmpfs */
 
@@ -992,8 +1017,7 @@ static int follow_symlink(
 
         log_debug("Followed mount entry path symlink %s → %s.", mount_entry_path(m), target);
 
-        free_and_replace(m->path_malloc, target);
-        m->has_prefix = true;
+        mount_entry_consume_prefix(m, TAKE_PTR(target));
 
         m->n_followed ++;
 
