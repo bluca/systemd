@@ -2817,7 +2817,7 @@ static int socket_accept_do(Socket *s, int fd) {
         assert(fd >= 0);
 
         for (;;) {
-                cfd = accept4(fd, NULL, NULL, SOCK_NONBLOCK);
+                cfd = accept4(fd, NULL, NULL, SOCK_NONBLOCK|SOCK_CLOEXEC);
                 if (cfd < 0) {
                         if (errno == EINTR)
                                 continue;
