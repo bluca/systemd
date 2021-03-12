@@ -319,6 +319,7 @@ static int save_external_coredump(
                 int *ret_node_fd,
                 int *ret_data_fd,
                 uint64_t *ret_size,
+                uint64_t *ret_compressed_size,
                 bool *ret_truncated) {
 
         _cleanup_free_ char *fn = NULL, *tmp = NULL;
@@ -365,38 +366,12 @@ static int save_external_coredump(
 
         mkdir_p_label("/var/lib/systemd/coredump", 0755);
 
-        fd = open_tmpfile_linkable(fn, O_RDWR|O_CLOEXEC, &tmp);
-        if (fd < 0)
-                return log_error_errno(fd, "Failed to create temporary file for coredump %s: %m", fn);
-
-        r = copy_bytes(input_fd, fd, max_size, 0);
-        if (r < 0) {
-                log_error_errno(r, "Cannot store coredump of %s (%s): %m", context[CONTEXT_PID], context[CONTEXT_COMM]);
-                goto fail;
-        }
-        *ret_truncated = r == 1;
-        if (*ret_truncated)
-                log_struct(LOG_INFO,
-                           LOG_MESSAGE("Core file was truncated to %zu bytes.", max_size),
-                           "SIZE_LIMIT=%zu", max_size,
-                           "MESSAGE_ID=" SD_MESSAGE_TRUNCATED_CORE_STR);
-
-        if (fstat(fd, &st) < 0) {
-                log_error_errno(errno, "Failed to fstat core file %s: %m", coredump_tmpfile_name(tmp));
-                goto fail;
-        }
-
-        if (lseek(fd, 0, SEEK_SET) == (off_t) -1) {
-                log_error_errno(errno, "Failed to seek on %s: %m", coredump_tmpfile_name(tmp));
-                goto fail;
-        }
-
+        /* Is compression enabled? Then compress on-the-fly, to keep memory footprint down. */
 #if HAVE_XZ || HAVE_LZ4
-        /* If we will remove the coredump anyway, do not compress. */
-        if (arg_compress && !maybe_remove_external_coredump(NULL, st.st_size)) {
-
+        if (arg_compress) {
                 _cleanup_free_ char *fn_compressed = NULL, *tmp_compressed = NULL;
                 _cleanup_close_ int fd_compressed = -1;
+                size_t uncompressed_size = 0;
 
                 fn_compressed = strappend(fn, COMPRESSED_EXT);
                 if (!fn_compressed) {
@@ -410,7 +385,9 @@ static int save_external_coredump(
                         goto uncompressed;
                 }
 
-                r = compress_stream(fd, fd_compressed, -1);
+                /* At this point input_fd might have advanced, so it is too late to fallback to
+                 * uncompressed storage. */
+                r = compress_stream(input_fd, fd_compressed, max_size, &uncompressed_size);
                 if (r < 0) {
                         log_error_errno(r, "Failed to compress %s: %m", coredump_tmpfile_name(tmp_compressed));
                         goto fail_compressed;
@@ -420,24 +397,88 @@ static int save_external_coredump(
                 if (r < 0)
                         goto fail_compressed;
 
-                /* OK, this worked, we can get rid of the uncompressed version now */
-                if (tmp)
-                        unlink_noerrno(tmp);
+                if (fstat(fd_compressed, &st) < 0) {
+                        r = -errno;
+                        log_error_errno(errno,
+                                        "Failed to fstat core file %s: %m",
+                                        coredump_tmpfile_name(tmp_compressed));
+                        goto fail_compressed;
+                }
 
-                *ret_filename = TAKE_PTR(fn_compressed);     /* compressed */
-                *ret_node_fd = TAKE_FD(fd_compressed);      /* compressed */
-                *ret_data_fd = TAKE_FD(fd);                 /* uncompressed */
-                *ret_size = (uint64_t) st.st_size; /* uncompressed */
+                /* Now decompress it again - why? Because the cores are coming from STDIN, so we cannot seek back
+                 * to the start. We don't want to keep copies mmapped around, as cores might be huge and cause
+                 * large spikes in systemd-coredump's memory footprint. So try to stream-decompress the archive
+                 * if possible, and if not we'll just skip saving the backtrace in the journal.
+                 * We still observe the maximum storage setting, even if the file lives for a very short
+                 * amount of time, since if the storage is on tmpfs it will be charged against coredump's
+                 * memory accounting.
+                 * This is attempted in a best-effort fashion, in case anything goes wrong we log and
+                 * carry on. The uncompressed core is also useful only for journal storage and backtrace
+                 * generation, so only do that if either of these is enabled. */
+                if ((arg_storage == COREDUMP_STORAGE_JOURNAL && uncompressed_size <= arg_journal_size_max) ||
+                     uncompressed_size <= arg_process_size_max) {
+                        fd = open_tmpfile_linkable(fn, O_RDWR|O_CLOEXEC, &tmp);
+                        if (fd < 0)
+                                log_warning_errno(fd,
+                                                  "Failed to create temporary file for coredump %s, will not extract backtrace: %m",
+                                                  fn);
+                        else {
+                                r = decompress_stream(fn_compressed, fd_compressed, fd, max_size);
+                                if (r < 0) {
+                                        log_warning_errno(r,
+                                                          "Failed to decompress coredump %s, will not extract backtrace: %m",
+                                                          fn);
+                                        fd = safe_close(fd);
+                                }
+                                (void) unlink(tmp);
+                        }
+                }
+
+                *ret_filename = TAKE_PTR(fn_compressed);       /* compressed */
+                *ret_node_fd = TAKE_FD(fd_compressed);         /* compressed */
+                *ret_compressed_size = (uint64_t) st.st_size;  /* compressed */
+                *ret_data_fd = TAKE_FD(fd);                    /* uncompressed or closed */
+                *ret_size = (uint64_t) uncompressed_size;      /* uncompressed */
 
                 return 0;
 
         fail_compressed:
                 if (tmp_compressed)
                         (void) unlink(tmp_compressed);
+                return r;
         }
 
 uncompressed:
 #endif
+
+        /* If compression is disabled at build time or runtime, then just stream the core
+         * file from STDIN to the storage directory. */
+
+        fd = open_tmpfile_linkable(fn, O_RDWR|O_CLOEXEC, &tmp);
+        if (fd < 0) {
+                r = fd;
+                log_error_errno(fd, "Failed to create temporary file for coredump %s: %m", fn);
+                goto fail;
+        }
+
+        r = copy_bytes(input_fd, fd, max_size, 0);
+        if (r < 0) {
+                log_error_errno(r, "Cannot store coredump of %s (%s): %m",
+                                context[CONTEXT_PID], context[CONTEXT_COMM]);
+                goto fail;
+        }
+        *ret_truncated = r == 1;
+        if (*ret_truncated)
+                log_struct(LOG_INFO,
+                           LOG_MESSAGE("Core file was truncated to %zu bytes.", max_size),
+                           "SIZE_LIMIT=%zu", max_size,
+                           "MESSAGE_ID=" SD_MESSAGE_TRUNCATED_CORE_STR);
+
+        if (fstat(fd, &st) < 0) {
+                r = -errno;
+                log_error_errno(errno, "Failed to fstat core file %s: %m", coredump_tmpfile_name(tmp));
+                goto fail;
+        }
 
         r = fix_permissions(fd, tmp, fn, context, uid);
         if (r < 0)
@@ -711,6 +752,7 @@ static int submit_coredump(
         _cleanup_close_ int coredump_fd = -1, coredump_node_fd = -1;
         _cleanup_free_ char *core_message = NULL, *filename = NULL, *coredump_data = NULL;
         uint64_t coredump_size = UINT64_MAX;
+        uint64_t coredump_compressed_size = UINT64_MAX;
         bool truncated = false, journald_crash;
         int r;
 
@@ -726,14 +768,15 @@ static int submit_coredump(
 
         /* Always stream the coredump to disk, if that's possible */
         r = save_external_coredump(context, input_fd,
-                                   &filename, &coredump_node_fd, &coredump_fd, &coredump_size, &truncated);
+                                   &filename, &coredump_node_fd, &coredump_fd,
+                                   &coredump_size, &coredump_compressed_size, &truncated);
         if (r < 0)
                 /* Skip whole core dumping part */
                 goto log;
 
         /* If we don't want to keep the coredump on disk, remove it now, as later on we will lack the privileges for
          * it. However, we keep the fd to it, so that we can still process it and log it. */
-        r = maybe_remove_external_coredump(filename, coredump_size);
+        r = maybe_remove_external_coredump(filename, coredump_node_fd >= 0 ? coredump_compressed_size : coredump_size);
         if (r < 0)
                 return r;
         if (r == 0) {
@@ -743,7 +786,7 @@ static int submit_coredump(
                 iovec[n_iovec++] = IOVEC_MAKE_STRING(coredump_filename);
         } else if (arg_storage == COREDUMP_STORAGE_EXTERNAL)
                 log_info("The core will not be stored: size %"PRIu64" is greater than %"PRIu64" (the configured maximum)",
-                         coredump_size, arg_external_size_max);
+                         coredump_node_fd >= 0 ? coredump_compressed_size : coredump_size, arg_external_size_max);
 
         /* Vacuum again, but exclude the coredump we just created */
         (void) coredump_vacuum(coredump_node_fd >= 0 ? coredump_node_fd : coredump_fd, arg_keep_free, arg_max_use);
@@ -758,7 +801,7 @@ static int submit_coredump(
 
 #if HAVE_ELFUTILS
         /* Try to get a strack trace if we can */
-        if (coredump_size <= arg_process_size_max) {
+        if (coredump_fd != -1 && coredump_size <= arg_process_size_max) {
                 _cleanup_free_ char *stacktrace = NULL;
 
                 r = coredump_make_stack_trace(coredump_fd, context[CONTEXT_EXE], &stacktrace);
@@ -773,9 +816,11 @@ static int submit_coredump(
                         log_warning("Failed to generate stack trace: %s", dwfl_errmsg(dwfl_errno()));
                 else
                         log_warning_errno(r, "Failed to generate stack trace: %m");
-        } else
+        } else if (coredump_size > arg_process_size_max)
                 log_debug("Not generating stack trace: core size %"PRIu64" is greater than %"PRIu64" (the configured maximum)",
                           coredump_size, arg_process_size_max);
+        else
+                log_debug("Not generating stack trace: uncompressed core unavailable.");
 
         if (!core_message)
 #endif
@@ -801,7 +846,7 @@ log:
                 iovec[n_iovec++] = IOVEC_MAKE_STRING("COREDUMP_TRUNCATED=1");
 
         /* Optionally store the entire coredump in the journal */
-        if (arg_storage == COREDUMP_STORAGE_JOURNAL) {
+        if (arg_storage == COREDUMP_STORAGE_JOURNAL && coredump_fd != -1) {
                 if (coredump_size <= arg_journal_size_max) {
                         size_t sz = 0;
 
