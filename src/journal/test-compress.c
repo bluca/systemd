@@ -36,7 +36,7 @@ typedef int (decompress_sw_t)(const void *src, uint64_t src_size,
                               const void *prefix, size_t prefix_len,
                               uint8_t extra);
 
-typedef int (compress_stream_t)(int fdf, int fdt, uint64_t max_bytes);
+typedef int (compress_stream_t)(int fdf, int fdt, uint64_t max_bytes, size_t *uncompressed_size);
 typedef int (decompress_stream_t)(int fdf, int fdt, uint64_t max_size);
 
 #if HAVE_XZ || HAVE_LZ4
@@ -144,6 +144,7 @@ static void test_compress_stream(int compression,
         int r;
         _cleanup_free_ char *cmd = NULL, *cmd2 = NULL;
         struct stat st = {};
+        size_t uncompressed_size;
 
         r = find_binary(cat, NULL);
         if (r < 0) {
@@ -162,7 +163,7 @@ static void test_compress_stream(int compression,
 
         assert_se((dst = mkostemp_safe(pattern)) >= 0);
 
-        assert_se(compress(src, dst, -1) == 0);
+        assert_se(compress(src, dst, -1, &uncompressed_size) == 0);
 
         if (cat) {
                 assert_se(asprintf(&cmd, "%s %s | diff %s -", cat, pattern, srcfile) > 0);
@@ -174,6 +175,7 @@ static void test_compress_stream(int compression,
         assert_se((dst2 = mkostemp_safe(pattern2)) >= 0);
 
         assert_se(stat(srcfile, &st) == 0);
+        assert_se((size_t)st.st_size == uncompressed_size);
 
         assert_se(lseek(dst, 0, SEEK_SET) == 0);
         r = decompress(dst, dst2, st.st_size);

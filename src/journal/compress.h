@@ -50,8 +50,8 @@ int decompress_startswith(int compression,
                           const void *prefix, size_t prefix_len,
                           uint8_t extra);
 
-int compress_stream_xz(int fdf, int fdt, uint64_t max_bytes);
-int compress_stream_lz4(int fdf, int fdt, uint64_t max_bytes);
+int compress_stream_xz(int fdf, int fdt, uint64_t max_bytes, size_t *ret_uncompressed_size);
+int compress_stream_lz4(int fdf, int fdt, uint64_t max_bytes, size_t *ret_uncompressed_size);
 
 int decompress_stream_xz(int fdf, int fdt, uint64_t max_size);
 int decompress_stream_lz4(int fdf, int fdt, uint64_t max_size);
