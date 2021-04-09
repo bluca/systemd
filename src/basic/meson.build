@@ -397,6 +397,7 @@ libbasic = static_library(
                         libm,
                         libdl],
         c_args : ['-fvisibility=default'],
+        c_pch: 'pch/basic_pch.h',
         install : false)
 
 ############################################################
