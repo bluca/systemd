@@ -182,6 +182,7 @@ int pkcs11_token_login(
                 const char *icon_name,
                 const char *keyname,
                 usec_t until,
+                bool headless,
                 char **ret_used_pin) {
 
         _cleanup_free_ char *token_uri_string = NULL, *token_uri_escaped = NULL, *id = NULL, *token_label = NULL;
@@ -245,7 +246,9 @@ int pkcs11_token_login(
                         string_erase(e);
                         if (unsetenv("PIN") < 0)
                                 return log_error_errno(errno, "Failed to unset $PIN: %m");
-                } else {
+                } else if (headless)
+                        return log_error_errno(SYNTHETIC_ERRNO(ENOPKG), "PIN querying disabled via 'headless' option. Use the 'PIN' environment variable.");
+                else {
                         _cleanup_free_ char *text = NULL;
 
                         if (FLAGS_SET(token_info->flags, CKF_USER_PIN_FINAL_TRY))

@@ -44,7 +44,7 @@ static int pkcs11_callback(
 
         /* Called for every token matching our URI */
 
-        r = pkcs11_token_login(m, session, slot_id, token_info, "home directory operation", "user-home", "pkcs11-pin", UINT64_MAX, &pin_used);
+        r = pkcs11_token_login(m, session, slot_id, token_info, "home directory operation", "user-home", "pkcs11-pin", UINT64_MAX, false, &pin_used);
         if (r < 0)
                 return r;
 
