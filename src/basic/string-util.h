@@ -193,6 +193,8 @@ char *strextend_with_separator(char **x, const char *separator, ...) _sentinel_;
 
 #define strextend(x, ...) strextend_with_separator(x, NULL, __VA_ARGS__)
 
+int strextendf(char **x, const char *format, ...) _printf_(2,3);
+
 char *strrep(const char *s, unsigned n);
 
 int split_pair(const char *s, const char *sep, char **l, char **r);
