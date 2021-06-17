@@ -11,6 +11,7 @@ typedef enum ExtractFlags {
         EXTRACT_UNQUOTE                  = 1 << 4,
         EXTRACT_DONT_COALESCE_SEPARATORS = 1 << 5,
         EXTRACT_RETAIN_ESCAPE            = 1 << 6,
+        EXTRACT_RETAIN_SEPARATORS        = 1 << 7,
 } ExtractFlags;
 
 int extract_first_word(const char **p, char **ret, const char *separators, ExtractFlags flags);
