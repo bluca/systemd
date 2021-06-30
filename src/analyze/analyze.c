@@ -2153,7 +2153,7 @@ static int do_condition(int argc, char *argv[], void *userdata) {
 }
 
 static int do_verify(int argc, char *argv[], void *userdata) {
-        return verify_units(strv_skip(argv, 1), arg_scope, arg_man, arg_generators);
+        return verify_units(strv_skip(argv, 1), arg_scope, arg_man, arg_generators, arg_root);
 }
 
 static int do_security(int argc, char *argv[], void *userdata) {
@@ -2294,7 +2294,7 @@ static int parse_argv(int argc, char *argv[]) {
                         return version();
 
                 case ARG_ROOT:
-                        r = parse_path_argument(optarg, /* suppress_root= */ true, &arg_root);
+                        r = parse_path_argument_and_warn(optarg, /* suppress_root= */ true, &arg_root);
                         if (r < 0)
                                 return r;
                         break;
@@ -2407,9 +2407,9 @@ static int parse_argv(int argc, char *argv[]) {
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                        "Option --user is not supported for cat-config right now.");
 
-        if (arg_root && !streq_ptr(argv[optind], "cat-config"))
+        if (arg_root && !STRPTR_IN_SET(argv[optind], "cat-config", "verify"))
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                       "Option --root is only supported for cat-config right now.");
+                                       "Option --root is only supported for cat-config and verify right now.");
 
         return 1; /* work to do */
 }
