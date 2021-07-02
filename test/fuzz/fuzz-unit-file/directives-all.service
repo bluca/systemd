@@ -76,6 +76,7 @@ ConditionSecurity=
 ConditionUser=
 ConditionVirtualization=
 Conflicts=
+CoreScheduling=
 DefaultDependencies=
 DefaultInstance=
 DeferAcceptSec=

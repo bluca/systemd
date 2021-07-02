@@ -12,3 +12,18 @@
 #define PR_CAP_AMBIENT_LOWER     3
 #define PR_CAP_AMBIENT_CLEAR_ALL 4
 #endif
+
+/* 7ac592aa35a684ff1858fb9ec282886b9e3575ac (5.14) */
+#ifndef PR_SCHED_CORE
+#define PR_SCHED_CORE 62
+
+#define PR_SCHED_CORE_GET        0
+#define PR_SCHED_CORE_CREATE     1
+#define PR_SCHED_CORE_SHARE_TO   2
+#define PR_SCHED_CORE_SHARE_FROM 3
+#define PR_SCHED_CORE_MAX        4
+#endif
+
+/* Not defined in UAPI headers, but expected to be used with PR_SCHED_CORE */
+#define PIDTYPE_PID  0
+#define PIDTYPE_TGID 1

@@ -1114,6 +1114,7 @@ const sd_bus_vtable bus_exec_vtable[] = {
         SD_BUS_PROPERTY("NUMAMask", "ay", property_get_numa_mask, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("TimerSlackNSec", "t", property_get_timer_slack_nsec, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("CPUSchedulingResetOnFork", "b", bus_property_get_bool, offsetof(ExecContext, cpu_sched_reset_on_fork), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("CoreScheduling", "b", bus_property_get_bool, offsetof(ExecContext, core_scheduling), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("NonBlocking", "b", bus_property_get_bool, offsetof(ExecContext, non_blocking), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("StandardInput", "s", property_get_exec_input, offsetof(ExecContext, std_input), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("StandardInputFileDescriptorName", "s", property_get_stdio_fdname, 0, SD_BUS_VTABLE_PROPERTY_CONST),
@@ -1800,6 +1801,9 @@ int bus_exec_context_set_transient_property(
 
         if (streq(name, "CPUSchedulingResetOnFork"))
                 return bus_set_transient_bool(u, name, &c->cpu_sched_reset_on_fork, message, flags, error);
+
+        if (streq(name, "CoreScheduling"))
+                return bus_set_transient_bool(u, name, &c->core_scheduling, message, flags, error);
 
         if (streq(name, "NonBlocking"))
                 return bus_set_transient_bool(u, name, &c->non_blocking, message, flags, error);

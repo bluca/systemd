@@ -23,6 +23,7 @@
 {{type}}.CPUSchedulingPriority,            config_parse_exec_cpu_sched_prio,            0,                                  offsetof({{type}}, exec_context)
 {{type}}.CPUSchedulingResetOnFork,         config_parse_bool,                           0,                                  offsetof({{type}}, exec_context.cpu_sched_reset_on_fork)
 {{type}}.CPUAffinity,                      config_parse_exec_cpu_affinity,              0,                                  offsetof({{type}}, exec_context)
+{{type}}.CoreScheduling,                   config_parse_bool,                           0,                                  offsetof({{type}}, exec_context.core_scheduling)
 {{type}}.NUMAPolicy,                       config_parse_numa_policy,                    0,                                  offsetof({{type}}, exec_context.numa_policy.type)
 {{type}}.NUMAMask,                         config_parse_numa_mask,                      0,                                  offsetof({{type}}, exec_context.numa_policy)
 {{type}}.UMask,                            config_parse_mode,                           0,                                  offsetof({{type}}, exec_context.umask)

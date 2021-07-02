@@ -68,6 +68,7 @@
 #include "manager-dump.h"
 #include "memory-util.h"
 #include "missing_fs.h"
+#include "missing_prctl.h"
 #include "mkdir.h"
 #include "mount-util.h"
 #include "mountpoint-util.h"
@@ -4045,6 +4046,12 @@ static int exec_child(
                         return log_unit_error_errno(unit, errno, "Failed to set up IO scheduling priority: %m");
                 }
 
+        if (context->core_scheduling)
+                if (prctl(PR_SCHED_CORE, PR_SCHED_CORE_CREATE, 0, PIDTYPE_TGID, NULL) < 0) {
+                        *exit_status = EXIT_CORE_SCHEDULING;
+                        return log_unit_error_errno(unit, errno, "Failed to set up core scheduling: %m");
+                }
+
         if (context->timer_slack_nsec != NSEC_INFINITY)
                 if (prctl(PR_SET_TIMERSLACK, context->timer_slack_nsec) < 0) {
                         *exit_status = EXIT_TIMERSLACK;
@@ -5425,6 +5432,9 @@ void exec_context_dump(const ExecContext *c, FILE* f, const char *prefix) {
                 affinity = cpu_set_to_range_string(&c->cpu_set);
                 fprintf(f, "%sCPUAffinity: %s\n", prefix, affinity);
         }
+
+        if (c->core_scheduling)
+                fprintf(f, "%sCoreScheduling: yes\n", prefix);
 
         if (mpol_is_valid(numa_policy_get_type(&c->numa_policy))) {
                 _cleanup_free_ char *nodes = NULL;

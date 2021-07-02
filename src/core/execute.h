@@ -195,6 +195,7 @@ struct ExecContext {
         int ioprio;
         int cpu_sched_policy;
         int cpu_sched_priority;
+        bool core_scheduling;
         uint64_t coredump_filter;
 
         CPUSet cpu_set;

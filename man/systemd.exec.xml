@@ -1079,6 +1079,16 @@ CapabilityBoundingSet=~CAP_B CAP_C</programlisting>
       </varlistentry>
 
       <varlistentry>
+        <term><varname>CoreScheduling=</varname></term>
+
+        <listitem><para>Takes a boolean argument, if true processes and threads spawned by the service will be isolated from
+        other processes and threads from the point of view of sharing SMT (simultaneous multithreading or hyperthreading)
+        sibling cores. See the kernel documentation on
+        <ulink url="https://www.kernel.org/doc/html/latest/admin-guide/hw-vuln/core-scheduling.html">core scheduling</ulink>
+        for details.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
         <term><varname>CPUAffinity=</varname></term>
 
         <listitem><para>Controls the CPU affinity of the executed processes. Takes a list of CPU indices or ranges
