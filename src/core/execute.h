@@ -128,9 +128,15 @@ typedef enum ExecDirectoryType {
         _EXEC_DIRECTORY_TYPE_INVALID = -1,
 } ExecDirectoryType;
 
+typedef struct ExecDirectoryItem {
+        char *path;
+        char **symlinks;
+} ExecDirectoryItem;
+
 typedef struct ExecDirectory {
-        char **paths;
         mode_t mode;
+        size_t n_items;
+        ExecDirectoryItem *items;
 } ExecDirectory;
 
 typedef enum ExecCleanMask {
@@ -450,6 +456,9 @@ bool exec_context_get_cpu_affinity_from_numa(const ExecContext *c);
 ExecSetCredential *exec_set_credential_free(ExecSetCredential *sc);
 DEFINE_TRIVIAL_CLEANUP_FUNC(ExecSetCredential*, exec_set_credential_free);
 
+void exec_directory_done(ExecDirectory *d);
+int exec_directory_add(ExecDirectoryItem **d, size_t *n, const char *path, char **symlinks);
+
 extern const struct hash_ops exec_set_credential_hash_ops;
 
 const char* exec_output_to_string(ExecOutput i) _const_;
@@ -469,6 +478,9 @@ ExecKeyringMode exec_keyring_mode_from_string(const char *s) _pure_;
 
 const char* exec_directory_type_to_string(ExecDirectoryType i) _const_;
 ExecDirectoryType exec_directory_type_from_string(const char *s) _pure_;
+
+const char* exec_directory_type_symlink_to_string(ExecDirectoryType i) _const_;
+ExecDirectoryType exec_directory_type_symlink_from_string(const char *s) _pure_;
 
 const char* exec_resource_type_to_string(ExecDirectoryType i) _const_;
 ExecDirectoryType exec_resource_type_from_string(const char *s) _pure_;

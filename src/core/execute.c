@@ -1911,26 +1911,29 @@ static int build_environment(
         }
 
         for (ExecDirectoryType t = 0; t < _EXEC_DIRECTORY_TYPE_MAX; t++) {
-                _cleanup_free_ char *pre = NULL, *joined = NULL;
+                _cleanup_free_ char *joined = NULL;
                 const char *n;
 
                 if (!p->prefix[t])
                         continue;
 
-                if (strv_isempty(c->directories[t].paths))
+                if (c->directories[t].n_items == 0)
                         continue;
 
                 n = exec_directory_env_name_to_string(t);
                 if (!n)
                         continue;
 
-                pre = strjoin(p->prefix[t], "/");
-                if (!pre)
-                        return -ENOMEM;
+                for (size_t i = 0; i < c->directories[t].n_items; i++) {
+                        _cleanup_free_ char *prefixed = NULL;
 
-                joined = strv_join_full(c->directories[t].paths, ":", pre, true);
-                if (!joined)
-                        return -ENOMEM;
+                        prefixed = path_join(p->prefix[t], c->directories[t].items[i].path);
+                        if (!prefixed)
+                                return -ENOMEM;
+
+                        if (!strextend_with_separator(&joined, ":", prefixed, NULL))
+                                return -ENOMEM;
+                }
 
                 x = strjoin(n, "=", joined);
                 if (!x)
@@ -2037,15 +2040,15 @@ bool exec_needs_mount_namespace(
                         if (params && !params->prefix[t])
                                 continue;
 
-                        if (!strv_isempty(context->directories[t].paths))
+                        if (context->directories[t].n_items > 0)
                                 return true;
                 }
         }
 
         if (context->dynamic_user &&
-            (!strv_isempty(context->directories[EXEC_DIRECTORY_STATE].paths) ||
-             !strv_isempty(context->directories[EXEC_DIRECTORY_CACHE].paths) ||
-             !strv_isempty(context->directories[EXEC_DIRECTORY_LOGS].paths)))
+            (context->directories[EXEC_DIRECTORY_STATE].n_items > 0 ||
+             context->directories[EXEC_DIRECTORY_CACHE].n_items > 0 ||
+             context->directories[EXEC_DIRECTORY_LOGS].n_items > 0))
                 return true;
 
         if (context->log_namespace)
@@ -2227,12 +2230,43 @@ static bool exec_directory_is_private(const ExecContext *context, ExecDirectoryT
         return true;
 }
 
+static int create_many_symlinks(const char *root, const char *source, char **symlinks) {
+        _cleanup_free_ char *src_abs = NULL;
+        char **dst;
+        int r;
+
+        assert(source);
+
+        src_abs = path_join(root, source);
+        if (!src_abs)
+                return -ENOMEM;
+
+        STRV_FOREACH(dst, symlinks) {
+                _cleanup_free_ char *dst_abs = NULL;
+
+                dst_abs = path_join(root, *dst);
+                if (!dst_abs)
+                        return -ENOMEM;
+
+                r = mkdir_parents_label(dst_abs, 0755);
+                if (r < 0)
+                        return r;
+
+                r = symlink_idempotent(src_abs, dst_abs, true);
+                if (r < 0)
+                        return r;
+        }
+
+        return 0;
+}
+
 static int setup_exec_directory(
                 const ExecContext *context,
                 const ExecParameters *params,
                 uid_t uid,
                 gid_t gid,
                 ExecDirectoryType type,
+                bool needs_mount_namespace,
                 int *exit_status) {
 
         static const int exit_status_table[_EXEC_DIRECTORY_TYPE_MAX] = {
@@ -2242,7 +2276,6 @@ static int setup_exec_directory(
                 [EXEC_DIRECTORY_LOGS] = EXIT_LOGS_DIRECTORY,
                 [EXEC_DIRECTORY_CONFIGURATION] = EXIT_CONFIGURATION_DIRECTORY,
         };
-        char **rt;
         int r;
 
         assert(context);
@@ -2260,10 +2293,10 @@ static int setup_exec_directory(
                         gid = 0;
         }
 
-        STRV_FOREACH(rt, context->directories[type].paths) {
+        for (size_t i = 0; i < context->directories[type].n_items; i++) {
                 _cleanup_free_ char *p = NULL, *pp = NULL;
 
-                p = path_join(params->prefix[type], *rt);
+                p = path_join(params->prefix[type], context->directories[type].items[i].path);
                 if (!p) {
                         r = -ENOMEM;
                         goto fail;
@@ -2312,7 +2345,7 @@ static int setup_exec_directory(
                         if (r < 0)
                                 goto fail;
 
-                        pp = path_join(private_root, *rt);
+                        pp = path_join(private_root, context->directories[type].items[i].path);
                         if (!pp) {
                                 r = -ENOMEM;
                                 goto fail;
@@ -2371,7 +2404,7 @@ static int setup_exec_directory(
                                 if (r < 0)
                                         goto fail;
 
-                                q = path_join(params->prefix[type], "private", *rt);
+                                q = path_join(params->prefix[type], "private", context->directories[type].items[i].path);
                                 if (!q) {
                                         r = -ENOMEM;
                                         goto fail;
@@ -2424,7 +2457,7 @@ static int setup_exec_directory(
                                         if (((st.st_mode ^ context->directories[type].mode) & 07777) != 0)
                                                 log_warning("%s \'%s\' already exists but the mode is different. "
                                                             "(File system: %o %sMode: %o)",
-                                                            exec_directory_type_to_string(type), *rt,
+                                                            exec_directory_type_to_string(type), context->directories[type].items[i].path,
                                                             st.st_mode & 07777, exec_directory_type_to_string(type), context->directories[type].mode & 07777);
 
                                         continue;
@@ -2446,6 +2479,17 @@ static int setup_exec_directory(
                 if (r < 0)
                         goto fail;
         }
+
+        /* If we are not going to run in a namespace, set up the symlinks - otherwise
+         * they are set up later, to allow configuring empty var/run/etc. */
+        if (!needs_mount_namespace)
+                for (size_t i = 0; i < context->directories[type].n_items; i++) {
+                        r = create_many_symlinks(params->prefix[type],
+                                                 context->directories[type].items[i].path,
+                                                 context->directories[type].items[i].symlinks);
+                        if (r < 0)
+                                goto fail;
+                }
 
         return 0;
 
@@ -2949,7 +2993,7 @@ static int compile_bind_mounts(
                 if (!params->prefix[t])
                         continue;
 
-                n += strv_length(context->directories[t].paths);
+                n += context->directories[t].n_items;
         }
 
         if (n <= 0) {
@@ -2990,12 +3034,10 @@ static int compile_bind_mounts(
         }
 
         for (ExecDirectoryType t = 0; t < _EXEC_DIRECTORY_TYPE_MAX; t++) {
-                char **suffix;
-
                 if (!params->prefix[t])
                         continue;
 
-                if (strv_isempty(context->directories[t].paths))
+                if (context->directories[t].n_items == 0)
                         continue;
 
                 if (exec_directory_is_private(context, t) &&
@@ -3017,13 +3059,13 @@ static int compile_bind_mounts(
                                 goto finish;
                 }
 
-                STRV_FOREACH(suffix, context->directories[t].paths) {
+                for (size_t i = 0; i < context->directories[t].n_items; i++) {
                         char *s, *d;
 
                         if (exec_directory_is_private(context, t))
-                                s = path_join(params->prefix[t], "private", *suffix);
+                                s = path_join(params->prefix[t], "private", context->directories[t].items[i].path);
                         else
-                                s = path_join(params->prefix[t], *suffix);
+                                s = path_join(params->prefix[t], context->directories[t].items[i].path);
                         if (!s) {
                                 r = -ENOMEM;
                                 goto finish;
@@ -3034,7 +3076,7 @@ static int compile_bind_mounts(
                                 /* When RootDirectory= or RootImage= are set, then the symbolic link to the private
                                  * directory is not created on the root directory. So, let's bind-mount the directory
                                  * on the 'non-private' place. */
-                                d = path_join(params->prefix[t], *suffix);
+                                d = path_join(params->prefix[t], context->directories[t].items[i].path);
                         else
                                 d = strdup(s);
                         if (!d) {
@@ -3083,19 +3125,31 @@ static int compile_symlinks(
         assert(ret_symlinks);
 
         for (ExecDirectoryType dt = 0; dt < _EXEC_DIRECTORY_TYPE_MAX; dt++) {
-                char **src;
-
-                if (!exec_directory_is_private(context, dt))
-                        continue;
-
-                STRV_FOREACH(src, context->directories[dt].paths) {
+                for (size_t i = 0; i < context->directories[dt].n_items; i++) {
                         _cleanup_free_ char *private_path = NULL, *path = NULL;
+                        char **symlink;
 
-                        private_path = path_join(params->prefix[dt], "private", *src);
+                        STRV_FOREACH(symlink, context->directories[dt].items[i].symlinks) {
+                                _cleanup_free_ char *src_abs = NULL, *dst_abs = NULL;
+
+                                src_abs = path_join(params->prefix[dt], context->directories[dt].items[i].path);
+                                dst_abs = path_join(params->prefix[dt], *symlink);
+                                if (!src_abs || !dst_abs)
+                                        return -ENOMEM;
+
+                                r = strv_consume_pair(&symlinks, TAKE_PTR(src_abs), TAKE_PTR(dst_abs));
+                                if (r < 0)
+                                        return r;
+                        }
+
+                        if (!exec_directory_is_private(context, dt))
+                                continue;
+
+                        private_path = path_join(params->prefix[dt], "private", context->directories[dt].items[i].path);
                         if (!private_path)
                                 return -ENOMEM;
 
-                        path = path_join(params->prefix[dt], *src);
+                        path = path_join(params->prefix[dt], context->directories[dt].items[i].path);
                         if (!path)
                                 return -ENOMEM;
 
@@ -3179,8 +3233,7 @@ static int apply_mount_namespace(
         if (r < 0)
                 return r;
 
-        /* Symlinks for exec dirs are set up after other mounts, before they are
-         * made read-only. */
+        /* Symlinks for exec dirs are set up after other mounts, before they are made read-only. */
         r = compile_symlinks(context, params, &symlinks);
         if (r < 0)
                 return r;
@@ -3592,21 +3645,19 @@ static int compile_suggested_paths(const ExecContext *c, const ExecParameters *p
          * directories. */
 
         for (ExecDirectoryType t = 0; t < _EXEC_DIRECTORY_TYPE_MAX; t++) {
-                char **i;
-
                 if (t == EXEC_DIRECTORY_CONFIGURATION)
                         continue;
 
                 if (!p->prefix[t])
                         continue;
 
-                STRV_FOREACH(i, c->directories[t].paths) {
+                for (size_t i = 0; i < c->directories[t].n_items; i++) {
                         char *e;
 
                         if (exec_directory_is_private(c, t))
-                                e = path_join(p->prefix[t], "private", *i);
+                                e = path_join(p->prefix[t], "private", c->directories[t].items[i].path);
                         else
-                                e = path_join(p->prefix[t], *i);
+                                e = path_join(p->prefix[t], c->directories[t].items[i].path);
                         if (!e)
                                 return -ENOMEM;
 
@@ -4064,8 +4115,10 @@ static int exec_child(
                 }
         }
 
+        needs_mount_namespace = exec_needs_mount_namespace(context, params, runtime);
+
         for (ExecDirectoryType dt = 0; dt < _EXEC_DIRECTORY_TYPE_MAX; dt++) {
-                r = setup_exec_directory(context, params, uid, gid, dt, exit_status);
+                r = setup_exec_directory(context, params, uid, gid, dt, needs_mount_namespace, exit_status);
                 if (r < 0)
                         return log_unit_error_errno(unit, r, "Failed to set up special execution directory in %s: %m", params->prefix[dt]);
         }
@@ -4210,7 +4263,6 @@ static int exec_child(
                         log_unit_warning(unit, "PrivateNetwork=yes is configured, but the kernel does not support network namespaces, ignoring.");
         }
 
-        needs_mount_namespace = exec_needs_mount_namespace(context, params, runtime);
         if (needs_mount_namespace) {
                 _cleanup_free_ char *error_path = NULL;
 
@@ -4887,7 +4939,7 @@ void exec_context_done(ExecContext *c) {
         c->address_families = set_free(c->address_families);
 
         for (ExecDirectoryType t = 0; t < _EXEC_DIRECTORY_TYPE_MAX; t++)
-                c->directories[t].paths = strv_free(c->directories[t].paths);
+                exec_directory_done(&c->directories[t]);
 
         c->log_level_max = -1;
 
@@ -4908,26 +4960,39 @@ void exec_context_done(ExecContext *c) {
 }
 
 int exec_context_destroy_runtime_directory(const ExecContext *c, const char *runtime_prefix) {
-        char **i;
-
         assert(c);
 
         if (!runtime_prefix)
                 return 0;
 
-        STRV_FOREACH(i, c->directories[EXEC_DIRECTORY_RUNTIME].paths) {
-                _cleanup_free_ char *p;
+        for (size_t i = 0; i < c->directories[EXEC_DIRECTORY_RUNTIME].n_items; i++) {
+                _cleanup_free_ char *p = NULL;
 
                 if (exec_directory_is_private(c, EXEC_DIRECTORY_RUNTIME))
-                        p = path_join(runtime_prefix, "private", *i);
+                        p = path_join(runtime_prefix, "private", c->directories[EXEC_DIRECTORY_RUNTIME].items[i].path);
                 else
-                        p = path_join(runtime_prefix, *i);
+                        p = path_join(runtime_prefix, c->directories[EXEC_DIRECTORY_RUNTIME].items[i].path);
                 if (!p)
                         return -ENOMEM;
 
                 /* We execute this synchronously, since we need to be sure this is gone when we start the
                  * service next. */
                 (void) rm_rf(p, REMOVE_ROOT);
+
+                char **symlink;
+                STRV_FOREACH(symlink, c->directories[EXEC_DIRECTORY_RUNTIME].items[i].symlinks) {
+                        _cleanup_free_ char *symlink_abs = NULL;
+
+                        if (exec_directory_is_private(c, EXEC_DIRECTORY_RUNTIME))
+                                symlink_abs = path_join(runtime_prefix, "private", *symlink);
+                        else
+                                symlink_abs = path_join(runtime_prefix, *symlink);
+                        if (!symlink_abs)
+                                return -ENOMEM;
+
+                        (void) unlink(symlink_abs);
+                }
+
         }
 
         return 0;
@@ -5329,8 +5394,12 @@ void exec_context_dump(const ExecContext *c, FILE* f, const char *prefix) {
         for (ExecDirectoryType dt = 0; dt < _EXEC_DIRECTORY_TYPE_MAX; dt++) {
                 fprintf(f, "%s%sMode: %04o\n", prefix, exec_directory_type_to_string(dt), c->directories[dt].mode);
 
-                STRV_FOREACH(d, c->directories[dt].paths)
-                        fprintf(f, "%s%s: %s\n", prefix, exec_directory_type_to_string(dt), *d);
+                for (size_t i = 0; i < c->directories[dt].n_items; i++) {
+                        fprintf(f, "%s%s: %s\n", prefix, exec_directory_type_to_string(dt), c->directories[dt].items[i].path);
+
+                        STRV_FOREACH(d, c->directories[dt].items[i].symlinks)
+                                fprintf(f, "%s%s: %s:%s\n", prefix, exec_directory_type_symlink_to_string(dt), c->directories[dt].items[i].path, *d);
+                }
         }
 
         fprintf(f,
@@ -5801,18 +5870,16 @@ int exec_context_get_clean_directories(
         assert(ret);
 
         for (ExecDirectoryType t = 0; t < _EXEC_DIRECTORY_TYPE_MAX; t++) {
-                char **i;
-
                 if (!FLAGS_SET(mask, 1U << t))
                         continue;
 
                 if (!prefix[t])
                         continue;
 
-                STRV_FOREACH(i, c->directories[t].paths) {
+                for (size_t i = 0; i < c->directories[t].n_items; i++) {
                         char *j;
 
-                        j = path_join(prefix[t], *i);
+                        j = path_join(prefix[t], c->directories[t].items[i].path);
                         if (!j)
                                 return -ENOMEM;
 
@@ -5822,7 +5889,18 @@ int exec_context_get_clean_directories(
 
                         /* Also remove private directories unconditionally. */
                         if (t != EXEC_DIRECTORY_CONFIGURATION) {
-                                j = path_join(prefix[t], "private", *i);
+                                j = path_join(prefix[t], "private", c->directories[t].items[i].path);
+                                if (!j)
+                                        return -ENOMEM;
+
+                                r = strv_consume(&l, j);
+                                if (r < 0)
+                                        return r;
+                        }
+
+                        char **symlink;
+                        STRV_FOREACH(symlink, c->directories[t].items[i].symlinks) {
+                                j = path_join(prefix[t], *symlink);
                                 if (!j)
                                         return -ENOMEM;
 
@@ -5844,7 +5922,7 @@ int exec_context_get_clean_mask(ExecContext *c, ExecCleanMask *ret) {
         assert(ret);
 
         for (ExecDirectoryType t = 0; t < _EXEC_DIRECTORY_TYPE_MAX; t++)
-                if (!strv_isempty(c->directories[t].paths))
+                if (c->directories[t].n_items > 0)
                         mask |= 1U << t;
 
         *ret = mask;
@@ -6500,6 +6578,51 @@ ExecSetCredential *exec_set_credential_free(ExecSetCredential *sc) {
         return mfree(sc);
 }
 
+void exec_directory_done(ExecDirectory *d) {
+        if (!d)
+                return;
+
+        for (size_t i = 0; i < d->n_items; i++) {
+                free(d->items[i].path);
+                strv_free(d->items[i].symlinks);
+        }
+
+        d->items = mfree(d->items);
+        d->n_items = 0;
+        d->mode = 0755;
+}
+
+int exec_directory_add(ExecDirectoryItem **d, size_t *n, const char *path, char **symlinks) {
+        _cleanup_strv_free_ char **s = NULL;
+        _cleanup_free_ char *p = NULL;
+
+        assert(d);
+        assert(n);
+        assert(path);
+
+        p = strdup(path);
+        if (!p)
+                return -ENOMEM;
+
+        if (symlinks) {
+                s = strv_copy(symlinks);
+                if (!s)
+                        return -ENOMEM;
+        }
+
+        ExecDirectoryItem *c = reallocarray(*d, *n + 1, sizeof(ExecDirectoryItem));
+        if (!c)
+                return -ENOMEM;
+        *d = c;
+
+        (*d)[(*n) ++] = (ExecDirectoryItem) {
+                .path = TAKE_PTR(p),
+                .symlinks = TAKE_PTR(s),
+        };
+
+        return 0;
+}
+
 DEFINE_HASH_OPS_WITH_VALUE_DESTRUCTOR(exec_set_credential_hash_ops, char, string_hash_func, string_compare_func, ExecSetCredential, exec_set_credential_free);
 
 static const char* const exec_input_table[_EXEC_INPUT_MAX] = {
@@ -6557,6 +6680,17 @@ static const char* const exec_directory_type_table[_EXEC_DIRECTORY_TYPE_MAX] = {
 };
 
 DEFINE_STRING_TABLE_LOOKUP(exec_directory_type, ExecDirectoryType);
+
+/* This table maps ExecDirectoryType to the symlink setting it is configured with in the unit */
+static const char* const exec_directory_type_symlink_table[_EXEC_DIRECTORY_TYPE_MAX] = {
+        [EXEC_DIRECTORY_RUNTIME]       = "RuntimeDirectorySymlink",
+        [EXEC_DIRECTORY_STATE]         = "StateDirectorySymlink",
+        [EXEC_DIRECTORY_CACHE]         = "CacheDirectorySymlink",
+        [EXEC_DIRECTORY_LOGS]          = "LogsDirectorySymlink",
+        [EXEC_DIRECTORY_CONFIGURATION] = "ConfigurationDirectorySymlink",
+};
+
+DEFINE_STRING_TABLE_LOOKUP(exec_directory_type_symlink, ExecDirectoryType);
 
 /* And this table maps ExecDirectoryType too, but to a generic term identifying the type of resource. This
  * one is supposed to be generic enough to be used for unit types that don't use ExecContext and per-unit
