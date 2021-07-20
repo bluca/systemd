@@ -75,6 +75,8 @@ struct sd_device {
         uid_t devuid;
         gid_t devgid;
 
+        uint64_t diskseq; /* Block device sequence number, monothonically incremented by the kernel on create/attach */
+
         /* only set when device is passed through netlink */
         DeviceAction action;
         uint64_t seqnum;
@@ -112,3 +114,5 @@ int device_set_devnum(sd_device *device, const char *major, const char *minor);
 int device_set_subsystem(sd_device *device, const char *_subsystem);
 int device_set_driver(sd_device *device, const char *_driver);
 int device_set_usec_initialized(sd_device *device, usec_t when);
+
+int sd_device_get_diskseq(sd_device *device, uint64_t *ret);

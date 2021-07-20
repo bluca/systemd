@@ -1053,6 +1053,18 @@ _public_ int sd_device_get_sysnum(sd_device *device, const char **ret) {
         return 0;
 }
 
+int sd_device_get_diskseq(sd_device *device, uint64_t *ret) {
+        assert_return(device, -EINVAL);
+
+        if (device->diskseq == 0)
+                return -ENOENT;
+
+        if (ret)
+                *ret = device->diskseq;
+
+        return 0;
+}
+
 static bool is_valid_tag(const char *tag) {
         assert(tag);
 

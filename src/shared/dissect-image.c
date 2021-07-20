@@ -57,6 +57,8 @@
 #include "user-util.h"
 #include "xattr-util.h"
 
+extern int sd_device_get_diskseq(sd_device *device, uint64_t *ret);
+
 /* how many times to wait for the device nodes to appear */
 #define N_DEVICE_NODE_LIST_ATTEMPTS 10
 
