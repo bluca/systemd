@@ -236,6 +236,7 @@ struct wait_data {
         sd_device *parent_device;
         blkid_partition blkidp;
         sd_device *found;
+        uint64_t diskseq;
 };
 
 static inline void wait_data_done(struct wait_data *d) {
@@ -253,20 +254,40 @@ static int device_monitor_handler(sd_device_monitor *monitor, sd_device *device,
         if (device_for_action(device, DEVICE_ACTION_REMOVE))
                 return 0;
 
-        r = sd_device_get_parent(device, &pp);
-        if (r < 0)
-                return 0; /* Doesn't have a parent? No relevant to us */
+        if (w->diskseq != 0) {
+                uint64_t diskseq;
 
-        r = sd_device_get_syspath(pp, &parent1_path); /* Check parent of device of this action */
-        if (r < 0)
-                goto finish;
+                /* If w->diskseq is non-zero, then we must have a disk seqnum */
+                r = sd_device_get_diskseq(device, &diskseq);
+                if (r < 0) {
+                        log_debug_errno(r, "Dropping event because it has no diskseq, but waiting for %" PRIu64, w->diskseq);
+                        return 0;
+                }
+                if (diskseq < w->diskseq) {
+                        log_debug("Dropping event because diskseq too old (%" PRIu64 " < %" PRIu64 ")",
+                                  diskseq, w->diskseq);
+                        return 0;
+                }
+                if (diskseq > w->diskseq) {
+                        r = -EBUSY;
+                        goto finish; /* Newer than what we were expecting, so we missed it, stop waiting */
+                }
+        } else {
+                r = sd_device_get_parent(device, &pp);
+                if (r < 0)
+                        return 0; /* Doesn't have a parent? No relevant to us */
 
-        r = sd_device_get_syspath(w->parent_device, &parent2_path); /* Check parent of device we are looking for */
-        if (r < 0)
-                goto finish;
+                r = sd_device_get_syspath(pp, &parent1_path); /* Check parent of device of this action */
+                if (r < 0)
+                        goto finish;
 
-        if (!path_equal(parent1_path, parent2_path))
-                return 0; /* Has a different parent than what we need, not interesting to us */
+                r = sd_device_get_syspath(w->parent_device, &parent2_path); /* Check parent of device we are looking for */
+                if (r < 0)
+                        goto finish;
+
+                if (!path_equal(parent1_path, parent2_path))
+                        return 0; /* Has a different parent than what we need, not interesting to us */
+        }
 
         r = device_is_partition(device, w->blkidp);
         if (r < 0)
@@ -287,6 +308,7 @@ static int wait_for_partition_device(
                 sd_device *parent,
                 blkid_partition pp,
                 usec_t deadline,
+                uint64_t diskseq,
                 sd_device **ret) {
 
         _cleanup_(sd_event_source_unrefp) sd_event_source *timeout_source = NULL;
@@ -321,6 +343,7 @@ static int wait_for_partition_device(
         _cleanup_(wait_data_done) struct wait_data w = {
                 .parent_device = parent,
                 .blkidp = pp,
+                .diskseq = diskseq,
         };
 
         r = sd_device_monitor_start(monitor, device_monitor_handler, &w);
@@ -461,6 +484,7 @@ int dissect_image(
                 int fd,
                 const VeritySettings *verity,
                 const MountOptions *mount_options,
+                uint64_t diskseq,
                 DissectImageFlags flags,
                 DissectedImage **ret) {
 
@@ -710,7 +734,7 @@ int dissect_image(
                 if (!pp)
                         return errno_or_else(EIO);
 
-                r = wait_for_partition_device(d, pp, deadline, &q);
+                r = wait_for_partition_device(d, pp, deadline, diskseq, &q);
                 if (r < 0)
                         return r;
 
@@ -2476,6 +2500,7 @@ int dissect_image_and_warn(
                 const char *name,
                 const VeritySettings *verity,
                 const MountOptions *mount_options,
+                uint64_t diskseq,
                 DissectImageFlags flags,
                 DissectedImage **ret) {
 
@@ -2490,7 +2515,7 @@ int dissect_image_and_warn(
                 name = buffer;
         }
 
-        r = dissect_image(fd, verity, mount_options, flags, ret);
+        r = dissect_image(fd, verity, mount_options, diskseq, flags, ret);
         switch (r) {
 
         case -EOPNOTSUPP:
@@ -2593,7 +2618,7 @@ int mount_image_privately_interactively(
         if (r < 0)
                 return log_error_errno(r, "Failed to set up loopback device: %m");
 
-        r = dissect_image_and_warn(d->fd, image, NULL, NULL, flags, &dissected_image);
+        r = dissect_image_and_warn(d->fd, image, NULL, NULL, d->diskseq, flags, &dissected_image);
         if (r < 0)
                 return r;
 
@@ -2684,6 +2709,7 @@ int verity_dissect_and_mount(
                         loop_device->fd,
                         &verity,
                         options,
+                        loop_device->diskseq,
                         dissect_image_flags,
                         &dissected_image);
         /* No partition table? Might be a single-filesystem image, try again */
@@ -2692,6 +2718,7 @@ int verity_dissect_and_mount(
                                 loop_device->fd,
                                 &verity,
                                 options,
+                                loop_device->diskseq,
                                 dissect_image_flags|DISSECT_IMAGE_NO_PARTITION_TABLE,
                                 &dissected_image);
         if (r < 0)

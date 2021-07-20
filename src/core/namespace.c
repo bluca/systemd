@@ -1802,6 +1802,7 @@ int setup_namespace(
                                 loop_device->fd,
                                 &verity,
                                 root_image_options,
+                                loop_device->diskseq,
                                 dissect_image_flags,
                                 &dissected_image);
                 if (r < 0)

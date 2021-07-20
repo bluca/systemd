@@ -526,6 +526,7 @@ static int merge_subprocess(Hashmap *images, const char *workspace) {
                                         img->path,
                                         &verity_settings,
                                         NULL,
+                                        d->diskseq,
                                         flags,
                                         &m);
                         if (r < 0)
