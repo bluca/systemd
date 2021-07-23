@@ -16,12 +16,14 @@
 
   <refnamediv>
     <refname>os-release</refname>
+    <refname>extension-release</refname>
     <refpurpose>Operating system identification</refpurpose>
   </refnamediv>
 
   <refsynopsisdiv>
     <para><filename>/etc/os-release</filename></para>
     <para><filename>/usr/lib/os-release</filename></para>
+    <para><filename>/usr/lib/extension-release.d/extension-release.<replaceable>IMAGE</replaceable></filename></para>
   </refsynopsisdiv>
 
   <refsect1>
@@ -79,6 +81,41 @@
     <para>For a longer rationale for <filename>os-release</filename>
     please refer to the <ulink
     url="http://0pointer.de/blog/projects/os-release">Announcement of <filename>/etc/os-release</filename></ulink>.</para>
+
+    <refsect2>
+      <title><filename>/etc/initrd-release</filename></title>
+
+      <para>In the <ulink
+      url="https://www.kernel.org/doc/html/latest/admin-guide/initrd.html">initrd</ulink>,
+      <filename>/etc/initrd-release</filename> plays the same role as <filename>os-release</filename> in the
+      main system. Additionally, the presence of that file means that the system is in the initrd phase.
+      <filename>/etc/os-release</filename> should be symlinked to <filename>/etc/initrd-release</filename>
+      (or vice versa), so programs that only look for <filename>/etc/os-release</filename> (as described
+      above) work correctly. The rest of this document that talks about <filename>os-release</filename>
+      should be understood to apply to <filename>initrd-release</filename> too.</para>
+    </refsect2>
+
+    <refsect2>
+      <title><filename>/usr/lib/extension-release.d/extension-release.<replaceable>IMAGE</replaceable></filename></title>
+
+      <para><filename>/usr/lib/extension-release.d/extension-release.<replaceable>IMAGE</replaceable></filename>
+      for extension images plays the same role as <filename>os-release</filename> in the main system, and follows the
+      same syntax and rules as described in the <ulink url="https://systemd.io/PORTABLE_SERVICES">Portable Services Documentation</ulink>.
+      The purpose of this file is to allow the operating system to correctly match an extension image
+      to a base OS image, This is typically implemented by first checking that the <varname>ID=</varname>
+      options match, and if they do either <varname>SYSEXT_LEVEL=</varname> has to match too (preferred), or
+      as a fallback if that is not present <varname>VERSION_ID=</varname> is checked. This ensures that ABI/API
+      between the layers matches and no incompatible images are merged in an overlay.
+      It is preferred that the <filename>extension-release.<replaceable>IMAGE</replaceable></filename> filename is suffixed
+      with the exact file name of the image that contains it, so that all such files in every layer of an overlay are visible.
+      But for the purpose of parsing metadata, in case it is not possible to guarantee that an image file name is stable
+      and doesn't change between the build and the deployment phases, the first and only file which name starts with
+      <filename>extension-release.</filename>, is located in the same directory and is tagged with a
+      <varname>user.extension-release.strict</varname> <citerefentry><refentrytitle>xattr</refentrytitle><manvolnum>7</manvolnum></citerefentry>
+      set to the string <literal>0</literal>, will be parsed instead, if the one with the expected name cannot be found.
+      The rest of this document that talks about <filename>os-release</filename> should be understood to apply to
+      <filename>extension-release</filename> too.</para>
+    </refsect2>
   </refsect1>
 
   <refsect1>
