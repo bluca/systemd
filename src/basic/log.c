@@ -39,6 +39,9 @@
 
 #define SNDBUF_SIZE (8*1024*1024)
 
+static log_syntax_callback_t log_syntax_callback = NULL;
+static void *log_syntax_callback_userdata = NULL;
+
 static LogTarget log_target = LOG_TARGET_CONSOLE;
 static int log_max_level[] = {LOG_INFO, LOG_INFO};
 assert_cc(ELEMENTSOF(log_max_level) == _LOG_REALM_MAX);
@@ -1333,6 +1336,14 @@ void log_received_signal(int level, const struct signalfd_siginfo *si) {
                          signal_to_string(si->ssi_signo));
 }
 
+void set_log_syntax_callback(log_syntax_callback_t cb, void *userdata) {
+        assert(!log_syntax_callback || !cb);
+        assert(!log_syntax_callback_userdata || !userdata);
+
+        log_syntax_callback = cb;
+        log_syntax_callback_userdata = userdata;
+}
+
 int log_syntax_internal(
                 const char *unit,
                 int level,
@@ -1343,6 +1354,9 @@ int log_syntax_internal(
                 int line,
                 const char *func,
                 const char *format, ...) {
+
+        if (log_syntax_callback)
+                log_syntax_callback(unit, level, log_syntax_callback_userdata);
 
         PROTECT_ERRNO;
         char buffer[LINE_MAX];
