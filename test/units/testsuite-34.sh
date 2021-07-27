@@ -9,7 +9,9 @@ systemd-analyze log-target console
 
 systemd-run --wait -p DynamicUser=0 -p StateDirectory=zzz touch /var/lib/zzz/test
 systemd-run --wait -p DynamicUser=0 -p StateDirectory=zzz test -f /var/lib/zzz/test
-! systemd-run --wait -p DynamicUser=0 -p StateDirectory=zzz test -f /var/lib/zzz/test-missing
+systemd-run --wait -p DynamicUser=0 -p StateDirectory=zzz -p TemporaryFileSystem=/var/lib test -f /var/lib/zzz/test
+systemd-run --wait -p DynamicUser=0 -p StateDirectory=zzz test -f /var/lib/zzz/test-missing \
+    && { echo 'unexpected success'; exit 1; }
 
 test -d /var/lib/zzz
 ! test -L /var/lib/zzz
@@ -20,7 +22,9 @@ test -f /var/lib/zzz/test
 # Convert to DynamicUser=1
 
 systemd-run --wait -p DynamicUser=1 -p StateDirectory=zzz test -f /var/lib/zzz/test
-! systemd-run --wait -p DynamicUser=1 -p StateDirectory=zzz test -f /var/lib/zzz/test-missing
+systemd-run --wait -p DynamicUser=1 -p StateDirectory=zzz -p TemporaryFileSystem=/var/lib test -f /var/lib/zzz/test
+systemd-run --wait -p DynamicUser=1 -p StateDirectory=zzz test -f /var/lib/zzz/test-missing \
+    && { echo 'unexpected success'; exit 1; }
 
 test -L /var/lib/zzz
 test -d /var/lib/private/zzz
@@ -31,7 +35,9 @@ test -f /var/lib/zzz/test
 # Convert back
 
 systemd-run --wait -p DynamicUser=0 -p StateDirectory=zzz test -f /var/lib/zzz/test
-! systemd-run --wait -p DynamicUser=0 -p StateDirectory=zzz test -f /var/lib/zzz/test-missing
+systemd-run --wait -p DynamicUser=0 -p StateDirectory=zzz -p TemporaryFileSystem=/var/lib test -f /var/lib/zzz/test
+systemd-run --wait -p DynamicUser=0 -p StateDirectory=zzz test -f /var/lib/zzz/test-missing \
+    && { echo 'unexpected success'; exit 1; }
 
 test -d /var/lib/zzz
 ! test -L /var/lib/zzz

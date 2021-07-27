@@ -117,6 +117,7 @@ int setup_namespace(
                 char **read_only_paths,
                 char **inaccessible_paths,
                 char **empty_directories,
+                char **exec_dir_symlinks,
                 const BindMount *bind_mounts,
                 size_t n_bind_mounts,
                 const TemporaryFileSystem *temporary_filesystems,
