@@ -279,7 +279,7 @@ int mac_selinux_generic_access_check(
         }
 
         log_debug_errno(r, "SELinux access check scon=%s tcon=%s tclass=%s perm=%s state=%s function=%s path=%s cmdline=%s: %m",
-                        scon, fcon, tclass, permission, enforce ? "enforcing" : "permissive", function, path, cl);
+                        scon, fcon, tclass, permission, enforce ? "enforcing" : "permissive", function, strna(path), isempty(cl) ? "n/a" : cl);
         return enforce ? r : 0;
 }
 
