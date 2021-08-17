@@ -90,6 +90,7 @@ static bool arg_man = true;
 static bool arg_generators = false;
 static char *arg_root = NULL;
 static char *arg_image = NULL;
+static bool arg_offline = false;
 static unsigned arg_iterations = 1;
 static usec_t arg_base_time = USEC_INFINITY;
 
@@ -2171,7 +2172,7 @@ static int do_security(int argc, char *argv[], void *userdata) {
 
         (void) pager_open(arg_pager_flags);
 
-        return analyze_security(bus, strv_skip(argv, 1), 0);
+        return analyze_security(bus, strv_skip(argv, 1), arg_scope, arg_man, arg_generators, arg_offline, arg_root, 0);
 }
 
 static int help(int argc, char *argv[], void *userdata) {
@@ -2219,6 +2220,7 @@ static int help(int argc, char *argv[], void *userdata) {
                "\nOptions:\n"
                "  -h --help                Show this help\n"
                "     --recursive-errors=MODE Control which units are verified\n"
+               "     --offline=BOOL          Perform a security review on unit file(s)\n"
                "     --version             Show package version\n"
                "     --no-pager            Do not pipe output into a pager\n"
                "     --system              Operate on system systemd instance\n"
@@ -2269,6 +2271,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_ITERATIONS,
                 ARG_BASE_TIME,
                 ARG_RECURSIVE_ERRORS,
+                ARG_OFFLINE,
         };
 
         static const struct option options[] = {
@@ -2279,6 +2282,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "root",             required_argument, NULL, ARG_ROOT             },
                 { "image",            required_argument, NULL, ARG_IMAGE            },
                 { "recursive-errors", required_argument, NULL, ARG_RECURSIVE_ERRORS },
+                { "offline",          required_argument, NULL, ARG_OFFLINE          },
                 { "system",           no_argument,       NULL, ARG_SYSTEM           },
                 { "user",             no_argument,       NULL, ARG_USER             },
                 { "global",           no_argument,       NULL, ARG_GLOBAL           },
@@ -2411,6 +2415,19 @@ static int parse_argv(int argc, char *argv[]) {
 
                         break;
 
+                case ARG_OFFLINE:
+                        if (optarg) {
+                                r = parse_boolean(optarg);
+                                if (r < 0)
+                                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                               "Failed to parse --offline= argument.");
+
+                                arg_offline = r;
+                        } else
+                                arg_offline = true;
+
+                        break;
+
                 case ARG_ITERATIONS:
                         r = safe_atou(optarg, &arg_iterations);
                         if (r < 0)
@@ -2432,6 +2449,10 @@ static int parse_argv(int argc, char *argv[]) {
                         assert_not_reached("Unhandled option code.");
                 }
 
+        if (arg_offline && !streq_ptr(argv[optind], "security"))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                       "Option --offline= is only supported for security right now.");
+
         if (arg_scope == UNIT_FILE_GLOBAL &&
             !STR_IN_SET(argv[optind] ?: "time", "dot", "unit-paths", "verify"))
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
@@ -2441,9 +2462,10 @@ static int parse_argv(int argc, char *argv[]) {
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                        "Option --user is not supported for cat-config right now.");
 
-        if ((arg_root || arg_image) && !STRPTR_IN_SET(argv[optind], "cat-config", "verify"))
+        if ((arg_root || arg_image) && (!STRPTR_IN_SET(argv[optind], "cat-config", "verify")) &&
+           (!(streq_ptr(argv[optind], "security") && arg_offline)))
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                       "Options --root= and --image= are only supported for cat-config and verify right now.");
+                                       "Options --root= and --image= are only supported for cat-config, verify and security when used with --offline= right now.");
 
         /* Having both an image and a root is not supported by the code */
         if (arg_root && arg_image)
