@@ -1429,17 +1429,28 @@ int dissected_image_mount(DissectedImage *m, const char *where, uid_t uid_shift,
                 if (r < 0)
                         return r;
 
-                if (flags & DISSECT_IMAGE_VALIDATE_OS) {
-                        r = path_is_os_tree(where);
-                        if (r < 0)
-                                return r;
-                        if (r == 0) {
+                if ((flags & (DISSECT_IMAGE_VALIDATE_OS|DISSECT_IMAGE_VALIDATE_OS_EXT)) != 0) {
+                        /* If either one of the validation flags are set, ensure that the image qualifies
+                         * as one or the other (or both). */
+                        bool ok = false;
+
+                        if (FLAGS_SET(flags, DISSECT_IMAGE_VALIDATE_OS)) {
+                                r = path_is_os_tree(where);
+                                if (r < 0)
+                                        return r;
+                                if (r > 0)
+                                        ok = true;
+                        }
+                        if (!ok && FLAGS_SET(flags, DISSECT_IMAGE_VALIDATE_OS_EXT)) {
                                 r = path_is_extension_tree(where, m->image_name);
                                 if (r < 0)
                                         return r;
-                                if (r == 0)
-                                        return -EMEDIUMTYPE;
+                                if (r > 0)
+                                        ok = true;
                         }
+
+                        if (!ok)
+                                return -ENOMEDIUM;
                 }
         }
 
@@ -2296,7 +2307,14 @@ int dissected_image_acquire_metadata(DissectedImage *m) {
         if (r == 0) {
                 error_pipe[0] = safe_close(error_pipe[0]);
 
-                r = dissected_image_mount(m, t, UID_INVALID, DISSECT_IMAGE_READ_ONLY|DISSECT_IMAGE_MOUNT_ROOT_ONLY|DISSECT_IMAGE_VALIDATE_OS);
+                r = dissected_image_mount(
+                                m,
+                                t,
+                                UID_INVALID,
+                                DISSECT_IMAGE_READ_ONLY|
+                                DISSECT_IMAGE_MOUNT_ROOT_ONLY|
+                                DISSECT_IMAGE_VALIDATE_OS|
+                                DISSECT_IMAGE_VALIDATE_OS_EXT);
                 if (r < 0) {
                         /* Let parent know the error */
                         (void) write(error_pipe[1], &r, sizeof(r));
