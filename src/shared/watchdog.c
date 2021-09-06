@@ -41,6 +41,9 @@ static int update_timeout(void) {
                 if (ioctl(watchdog_fd, WDIOC_SETTIMEOUT, &sec) < 0)
                         return log_warning_errno(errno, "Failed to set timeout to %is: %m", sec);
 
+                /* Just in case the driver is buggy */
+                assert(sec > 0);
+
                 watchdog_timeout = (usec_t) sec * USEC_PER_SEC;
                 log_info("Set hardware watchdog to %s.", format_timespan(buf, sizeof(buf), watchdog_timeout, 0));
 
