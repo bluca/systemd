@@ -585,13 +585,33 @@ char* path_join_internal(const char *first, ...) {
         return joined;
 }
 
-int find_executable_full(const char *name, bool use_path_envvar, char **ret) {
+int find_executable_full(const char *name, const char *root, bool use_path_envvar, char **ret) {
         int last_error, r;
         const char *p = NULL;
 
         assert(name);
 
         if (is_path(name)) {
+                _cleanup_free_ char *path_name = NULL;
+
+                /* Function chase_symlinks() is invoked only when root is not NULL,
+                 * as using it regardless of root value would alter the behavior
+                 * of existing callers for example: /bin/sleep would become
+                 * /usr/bin/sleep when find_executables is called. Hence, this function
+                 * should be invoked when needed to avoid unforeseen regression or other
+                 * complicated changes. */
+                if (root) {
+                        r = chase_symlinks(name,
+                                           root,
+                                           CHASE_PREFIX_ROOT,
+                                           &path_name,
+                                           /* ret_fd= */ NULL); /* prefix root to name in case full paths are not specified */
+                        if (r < 0)
+                                return r;
+
+                        name = path_name;
+                }
+
                 if (access(name, X_OK) < 0)
                         return -errno;
 
@@ -628,6 +648,23 @@ int find_executable_full(const char *name, bool use_path_envvar, char **ret) {
                 j = path_join(element, name);
                 if (!j)
                         return -ENOMEM;
+
+                if (root) {
+                        char *path_name;
+
+                        r = chase_symlinks(j,
+                                           root,
+                                           CHASE_PREFIX_ROOT,
+                                           &path_name,
+                                           /* ret_fd= */ NULL);
+                        if (r < 0) {
+                                if (r != -EACCES)
+                                        last_error = r;
+                                continue;
+                        }
+
+                        free_and_replace(j, path_name);
+                }
 
                 if (access(j, X_OK) >= 0) {
                         _cleanup_free_ char *with_dash;

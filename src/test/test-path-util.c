@@ -162,12 +162,12 @@ static void test_find_executable_full(void) {
 
         log_info("/* %s */", __func__);
 
-        assert_se(find_executable_full("sh", true, &p) == 0);
+        assert_se(find_executable_full("sh", NULL, true, &p) == 0);
         puts(p);
         assert_se(streq(basename(p), "sh"));
         free(p);
 
-        assert_se(find_executable_full("sh", false, &p) == 0);
+        assert_se(find_executable_full("sh", NULL, false, &p) == 0);
         puts(p);
         assert_se(streq(basename(p), "sh"));
         free(p);
@@ -179,12 +179,12 @@ static void test_find_executable_full(void) {
 
         assert_se(unsetenv("PATH") == 0);
 
-        assert_se(find_executable_full("sh", true, &p) == 0);
+        assert_se(find_executable_full("sh", NULL, true, &p) == 0);
         puts(p);
         assert_se(streq(basename(p), "sh"));
         free(p);
 
-        assert_se(find_executable_full("sh", false, &p) == 0);
+        assert_se(find_executable_full("sh", NULL, false, &p) == 0);
         puts(p);
         assert_se(streq(basename(p), "sh"));
         free(p);

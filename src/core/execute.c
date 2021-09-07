@@ -4220,7 +4220,7 @@ static int exec_child(
          * shall execute. */
 
         _cleanup_free_ char *executable = NULL;
-        r = find_executable_full(command->path, false, &executable);
+        r = find_executable_full(command->path, /* root= */ NULL, false, &executable);
         if (r < 0) {
                 if (r != -ENOMEM && (command->flags & EXEC_COMMAND_IGNORE_FAILURE)) {
                         log_struct_errno(LOG_INFO, r,
