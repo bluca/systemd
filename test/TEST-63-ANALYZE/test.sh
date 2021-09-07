@@ -6,4 +6,4 @@ TEST_DESCRIPTION="test analyze"
 # shellcheck source=test/test-functions
 . "${TEST_BASE_DIR:?}/test-functions"
 
-do_test "$@"
+do_test "$@" 63
