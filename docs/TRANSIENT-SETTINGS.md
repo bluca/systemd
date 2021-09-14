@@ -237,7 +237,9 @@ All cgroup/resource control settings are available for transient units
 ✓ CPUQuota=
 ✓ CPUQuotaPeriodSec=
 ✓ AllowedCPUs=
+✓ StartupAllowedCPUs=
 ✓ AllowedMemoryNodes=
+✓ StartupAllowedMemoryNodes=
 ✓ MemoryAccounting=
 ✓ DefaultMemoryMin=
 ✓ MemoryMin=
