@@ -216,7 +216,9 @@ void cgroup_context_done(CGroupContext *c) {
         c->ip_filters_egress = strv_free(c->ip_filters_egress);
 
         cpu_set_reset(&c->cpuset_cpus);
+        cpu_set_reset(&c->startup_cpuset_cpus);
         cpu_set_reset(&c->cpuset_mems);
+        cpu_set_reset(&c->startup_cpuset_mems);
 }
 
 static int unit_get_kernel_memory_limit(Unit *u, const char *file, uint64_t *ret) {
@@ -352,7 +354,7 @@ static char *format_cgroup_memory_limit_comparison(char *buf, size_t l, Unit *u,
 }
 
 void cgroup_context_dump(Unit *u, FILE* f, const char *prefix) {
-        _cleanup_free_ char *disable_controllers_str = NULL, *cpuset_cpus = NULL, *cpuset_mems = NULL;
+        _cleanup_free_ char *disable_controllers_str = NULL, *cpuset_cpus = NULL, *cpuset_mems = NULL, *startup_cpuset_cpus = NULL, *startup_cpuset_mems = NULL;
         CGroupIODeviceLimit *il;
         CGroupIODeviceWeight *iw;
         CGroupIODeviceLatency *l;
@@ -382,7 +384,9 @@ void cgroup_context_dump(Unit *u, FILE* f, const char *prefix) {
         (void) cg_mask_to_string(c->disable_controllers, &disable_controllers_str);
 
         cpuset_cpus = cpu_set_to_range_string(&c->cpuset_cpus);
+        startup_cpuset_cpus = cpu_set_to_range_string(&c->startup_cpuset_cpus);
         cpuset_mems = cpu_set_to_range_string(&c->cpuset_mems);
+        startup_cpuset_mems = cpu_set_to_range_string(&c->startup_cpuset_mems);
 
         fprintf(f,
                 "%sCPUAccounting: %s\n"
@@ -398,7 +402,9 @@ void cgroup_context_dump(Unit *u, FILE* f, const char *prefix) {
                 "%sCPUQuotaPerSecSec: %s\n"
                 "%sCPUQuotaPeriodSec: %s\n"
                 "%sAllowedCPUs: %s\n"
+                "%sStartupAllowedCPUs: %s\n"
                 "%sAllowedMemoryNodes: %s\n"
+                "%sStartupAllowedMemoryNodes: %s\n"
                 "%sIOWeight: %" PRIu64 "\n"
                 "%sStartupIOWeight: %" PRIu64 "\n"
                 "%sBlockIOWeight: %" PRIu64 "\n"
@@ -431,7 +437,9 @@ void cgroup_context_dump(Unit *u, FILE* f, const char *prefix) {
                 prefix, format_timespan(q, sizeof(q), c->cpu_quota_per_sec_usec, 1),
                 prefix, format_timespan(v, sizeof(v), c->cpu_quota_period_usec, 1),
                 prefix, strempty(cpuset_cpus),
+                prefix, strempty(startup_cpuset_cpus),
                 prefix, strempty(cpuset_mems),
+                prefix, strempty(startup_cpuset_mems),
                 prefix, c->io_weight,
                 prefix, c->startup_io_weight,
                 prefix, c->blockio_weight,
@@ -688,6 +696,14 @@ static bool cgroup_context_has_cpu_shares(CGroupContext *c) {
                 c->startup_cpu_shares != CGROUP_CPU_SHARES_INVALID;
 }
 
+static bool cgroup_context_has_allowed_cpus(CGroupContext *c) {
+        return c->cpuset_cpus.set || c->startup_cpuset_cpus.set;
+}
+
+static bool cgroup_context_has_allowed_mems(CGroupContext *c) {
+        return c->cpuset_mems.set || c->startup_cpuset_mems.set;
+}
+
 static uint64_t cgroup_context_cpu_weight(CGroupContext *c, ManagerState state) {
         if (IN_SET(state, MANAGER_STARTING, MANAGER_INITIALIZING) &&
             c->startup_cpu_weight != CGROUP_WEIGHT_INVALID)
@@ -706,6 +722,22 @@ static uint64_t cgroup_context_cpu_shares(CGroupContext *c, ManagerState state) 
                 return c->cpu_shares;
         else
                 return CGROUP_CPU_SHARES_DEFAULT;
+}
+
+static CPUSet *cgroup_context_allowed_cpus(CGroupContext *c, ManagerState state) {
+        if (IN_SET(state, MANAGER_STARTING, MANAGER_INITIALIZING) &&
+            c->startup_cpuset_cpus.set)
+                return &c->startup_cpuset_cpus;
+        else
+                return &c->cpuset_cpus;
+}
+
+static CPUSet *cgroup_context_allowed_mems(CGroupContext *c, ManagerState state) {
+        if (IN_SET(state, MANAGER_STARTING, MANAGER_INITIALIZING) &&
+            c->startup_cpuset_mems.set)
+                return &c->startup_cpuset_mems;
+        else
+                return &c->cpuset_mems;
 }
 
 usec_t cgroup_cpu_adjust_period(usec_t period, usec_t quota, usec_t resolution, usec_t max_period) {
@@ -1135,8 +1167,8 @@ static void cgroup_context_apply(
         }
 
         if ((apply_mask & CGROUP_MASK_CPUSET) && !is_local_root) {
-                cgroup_apply_unified_cpuset(u, &c->cpuset_cpus, "cpuset.cpus");
-                cgroup_apply_unified_cpuset(u, &c->cpuset_mems, "cpuset.mems");
+                cgroup_apply_unified_cpuset(u, cgroup_context_allowed_cpus(c, state), "cpuset.cpus");
+                cgroup_apply_unified_cpuset(u, cgroup_context_allowed_mems(c, state), "cpuset.mems");
         }
 
         /* The 'io' controller attributes are not exported on the host's root cgroup (being a pure cgroup v2
@@ -1436,7 +1468,7 @@ static CGroupMask unit_get_cgroup_mask(Unit *u) {
             c->cpu_quota_per_sec_usec != USEC_INFINITY)
                 mask |= CGROUP_MASK_CPU;
 
-        if (c->cpuset_cpus.set || c->cpuset_mems.set)
+        if (cgroup_context_has_allowed_cpus(c) || cgroup_context_has_allowed_mems(c))
                 mask |= CGROUP_MASK_CPUSET;
 
         if (cgroup_context_has_io_config(c) || cgroup_context_has_blockio_config(c))

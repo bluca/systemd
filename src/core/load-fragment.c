@@ -3586,7 +3586,7 @@ int config_parse_cpu_quota(
         return 0;
 }
 
-int config_parse_allowed_cpus(
+int config_parse_allowed_cpuset(
                 const char *unit,
                 const char *filename,
                 unsigned line,
@@ -3598,29 +3598,9 @@ int config_parse_allowed_cpus(
                 void *data,
                 void *userdata) {
 
-        CGroupContext *c = data;
+        CPUSet *c = data;
 
-        (void) parse_cpu_set_extend(rvalue, &c->cpuset_cpus, true, unit, filename, line, lvalue);
-
-        return 0;
-}
-
-int config_parse_allowed_mems(
-                const char *unit,
-                const char *filename,
-                unsigned line,
-                const char *section,
-                unsigned section_line,
-                const char *lvalue,
-                int ltype,
-                const char *rvalue,
-                void *data,
-                void *userdata) {
-
-        CGroupContext *c = data;
-
-        (void) parse_cpu_set_extend(rvalue, &c->cpuset_mems, true, unit, filename, line, lvalue);
-
+        (void) parse_cpu_set_extend(rvalue, c, true, unit, filename, line, lvalue);
         return 0;
 }
 

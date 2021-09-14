@@ -181,8 +181,10 @@ $1.WatchdogSignal,                       config_parse_signal,                   
 )m4_dnl
 m4_define(`CGROUP_CONTEXT_CONFIG_ITEMS',
 `$1.Slice,                               config_parse_unit_slice,                     0,                                  0
-$1.AllowedCPUs,                          config_parse_allowed_cpus,                   0,                                  offsetof($1, cgroup_context)
-$1.AllowedMemoryNodes,                   config_parse_allowed_mems,                   0,                                  offsetof($1, cgroup_context)
+$1.AllowedCPUs,                          config_parse_allowed_cpuset,                 0,                                  offsetof($1, cgroup_context.cpuset_cpus)
+$1.StartupAllowedCPUs,                   config_parse_allowed_cpuset,                 0,                                  offsetof($1, cgroup_context.startup_cpuset_cpus)
+$1.AllowedMemoryNodes,                   config_parse_allowed_cpuset,                 0,                                  offsetof($1, cgroup_context.cpuset_mems)
+$1.StartupAllowedMemoryNodes,            config_parse_allowed_cpuset,                 0,                                  offsetof($1, cgroup_context.startup_cpuset_mems)
 $1.CPUAccounting,                        config_parse_bool,                           0,                                  offsetof($1, cgroup_context.cpu_accounting)
 $1.CPUWeight,                            config_parse_cg_weight,                      0,                                  offsetof($1, cgroup_context.cpu_weight)
 $1.StartupCPUWeight,                     config_parse_cg_weight,                      0,                                  offsetof($1, cgroup_context.startup_cpu_weight)
