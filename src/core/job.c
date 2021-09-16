@@ -1390,6 +1390,8 @@ void job_shutdown_magic(Job *j) {
         /* In case messages on console has been disabled on boot */
         j->unit->manager->no_console_output = false;
 
+        manager_invalidate_startup_units(j->unit->manager);
+
         if (detect_container() > 0)
                 return;
 
