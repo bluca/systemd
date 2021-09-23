@@ -220,6 +220,9 @@ typedef struct Unit {
         /* Queue of units with StopWhenUnneeded set that shell be checked for clean-up. */
         LIST_FIELDS(Unit, stop_when_unneeded_queue);
 
+        /* Queue of units which have triggered an OnFailure= or OnSuccess= dependency job. */
+        LIST_FIELDS(Unit, triggered_by);
+
         /* PIDs we keep an eye on. Note that a unit might have many
          * more, but these are the ones we care enough about to
          * process SIGCHLD for */

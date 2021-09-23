@@ -2220,10 +2220,17 @@ void unit_start_on_failure(Unit *u) {
 
         HASHMAP_FOREACH_KEY(v, other, u->dependencies[UNIT_ON_FAILURE]) {
                 _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+                Job *job = NULL;
 
-                r = manager_add_job(u->manager, JOB_START, other, u->on_failure_job_mode, NULL, &error, NULL);
+                r = manager_add_job(u->manager, JOB_START, other, u->on_failure_job_mode, NULL, &error, &job);
                 if (r < 0)
                         log_unit_warning_errno(u, r, "Failed to enqueue OnFailure= job, ignoring: %s", bus_error_message(&error, r));
+                else if (job)
+                        /* u will be kept pinned since both UNIT_ON_FAILURE and UNIT_ON_SUCCESS includes
+                         * UNIT_ATOM_BACK_REFERENCE_IMPLIED. We save the triggering unit here since we
+                         * want to be able to reference it when we come to run the OnFailure= or OnSuccess=
+                         * dependency. */
+                        job_add_triggering_unit(job, u);
         }
 }
 
