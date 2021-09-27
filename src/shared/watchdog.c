@@ -97,8 +97,8 @@ static int update_timeout(void) {
                 r = watchdog_set_timeout();
                 if (r < 0) {
                         if (!ERRNO_IS_NOT_SUPPORTED(r))
-                                return log_warning_errno(r, "Failed to set timeout to %s, ignoring: %m",
-                                                         format_timespan(buf, sizeof(buf), watchdog_timeout, 0));
+                                return log_error_errno(r, "Failed to set timeout to %s: %m",
+                                                       format_timespan(buf, sizeof(buf), watchdog_timeout, 0));
 
                         log_info("Modifying watchdog timeout is not supported, reusing the programmed timeout.");
                         watchdog_timeout = USEC_INFINITY;
@@ -108,7 +108,7 @@ static int update_timeout(void) {
         if (watchdog_timeout == USEC_INFINITY) {
                 r = watchdog_get_timeout();
                 if (r < 0)
-                        return log_warning_errno(errno, "Failed to query watchdog HW timeout, ignoring: %m");
+                        return log_error_errno(errno, "Failed to query watchdog HW timeout: %m");
         }
 
         r = watchdog_set_enable(true);
@@ -123,6 +123,7 @@ static int update_timeout(void) {
 static int open_watchdog(void) {
         struct watchdog_info ident;
         const char *fn;
+        int r;
 
         if (watchdog_fd >= 0)
                 return 0;
@@ -140,7 +141,11 @@ static int open_watchdog(void) {
                          ident.firmware_version,
                          fn);
 
-        return update_timeout();
+        r = update_timeout();
+        if (r < 0)
+                watchdog_close(true);
+
+        return r;
 }
 
 int watchdog_set_device(const char *path) {
@@ -157,6 +162,8 @@ int watchdog_set_device(const char *path) {
 }
 
 int watchdog_setup(usec_t timeout) {
+        usec_t previous_timeout;
+        int r;
 
         /* timeout=0 closes the device whereas passing timeout=USEC_INFINITY
          * opens it (if needed) without configuring any particular timeout and
@@ -176,12 +183,17 @@ int watchdog_setup(usec_t timeout) {
         /* Initialize the watchdog timeout with the caller value. This value is
          * going to be updated by update_timeout() with the closest value
          * supported by the driver */
+        previous_timeout = watchdog_timeout;
         watchdog_timeout = timeout;
 
         if (watchdog_fd < 0)
                 return open_watchdog();
 
-        return update_timeout();
+        r = update_timeout();
+        if (r < 0)
+                watchdog_timeout = previous_timeout;
+
+        return r;
 }
 
 usec_t watchdog_runtime_wait(void) {
