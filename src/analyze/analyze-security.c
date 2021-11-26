@@ -9,6 +9,7 @@
 #include "bus-map-properties.h"
 #include "bus-unit-util.h"
 #include "bus-util.h"
+#include "copy.h"
 #include "env-util.h"
 #include "format-table.h"
 #include "in-addr-util.h"
@@ -17,6 +18,7 @@
 #include "manager.h"
 #include "missing_capability.h"
 #include "missing_sched.h"
+#include "mkdir.h"
 #include "nulstr-util.h"
 #include "parse-util.h"
 #include "path-util.h"
@@ -2645,6 +2647,7 @@ static int offline_security_checks(char **filenames,
                                    bool run_generators,
                                    unsigned threshold,
                                    const char *root,
+                                   const char *profile,
                                    PagerFlags pager_flags,
                                    JsonFormatFlags json_format_flags) {
 
@@ -2681,6 +2684,13 @@ static int offline_security_checks(char **filenames,
         if (r < 0)
                 return r;
 
+        if (profile) {
+                /* Ensure the temporary directory is in the search path, so that we can add drop-ins. */
+                r = strv_extend(&m->lookup_paths.search_path, m->lookup_paths.temporary_dir);
+                if (r < 0)
+                        return log_oom();
+        }
+
         log_debug("Loading remaining units from the command line...");
 
         STRV_FOREACH(filename, filenames) {
@@ -2694,6 +2704,33 @@ static int offline_security_checks(char **filenames,
                         if (r == 0)
                                 r = k;
                         continue;
+                }
+
+                /* When a portable image is analyzed, the profile is what provides a good chunk of
+                 * the security-related settings, but they are obviously not shipped with the image.
+                 * This allows to take them in consideration. */
+                if (profile) {
+                        _cleanup_free_ char *unit_name = NULL, *dropin = NULL, *profile_path = NULL;
+
+                        r = path_extract_filename(prepared, &unit_name);
+                        if (r < 0)
+                                return log_oom();
+
+                        dropin = strjoin(m->lookup_paths.temporary_dir, "/", unit_name, ".d/profile.conf");
+                        if (!dropin)
+                                return log_oom();
+                        (void) mkdir_parents(dropin, 0755);
+
+                        if (!is_path(profile)) {
+                                r = find_portable_profile(profile, unit_name, &profile_path);
+                                if (r < 0)
+                                        return log_error_errno(r, "Failed to find portable profile %s: %m", profile);
+                                profile = profile_path;
+                        }
+
+                        r = copy_file(profile, dropin, 0, 0644, 0, 0, 0);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to copy: %m");
                 }
 
                 k = manager_load_startable_unit_or_warn(m, NULL, prepared, &units[count]);
@@ -2724,6 +2761,7 @@ int analyze_security(sd_bus *bus,
                      bool offline,
                      unsigned threshold,
                      const char *root,
+                     const char *profile,
                      JsonFormatFlags json_format_flags,
                      PagerFlags pager_flags,
                      AnalyzeSecurityFlags flags) {
@@ -2734,7 +2772,7 @@ int analyze_security(sd_bus *bus,
         assert(bus);
 
         if (offline)
-                return offline_security_checks(units, policy, scope, check_man, run_generators, threshold, root, pager_flags, json_format_flags);
+                return offline_security_checks(units, policy, scope, check_man, run_generators, threshold, root, profile, pager_flags, json_format_flags);
 
         if (strv_length(units) != 1) {
                 overview_table = table_new("unit", "exposure", "predicate", "happy");

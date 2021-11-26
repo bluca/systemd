@@ -96,12 +96,14 @@ static unsigned arg_threshold = 100;
 static unsigned arg_iterations = 1;
 static usec_t arg_base_time = USEC_INFINITY;
 static JsonFormatFlags arg_json_format_flags = 0;
+static char *arg_profile = NULL;
 
 STATIC_DESTRUCTOR_REGISTER(arg_dot_from_patterns, strv_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_dot_to_patterns, strv_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_root, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_image, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_security_policy, freep);
+STATIC_DESTRUCTOR_REGISTER(arg_profile, freep);
 
 struct boot_times {
         usec_t firmware_time;
@@ -2205,6 +2207,7 @@ static int do_security(int argc, char *argv[], void *userdata) {
                                 arg_offline,
                                 arg_threshold,
                                 arg_root,
+                                arg_profile,
                                 arg_json_format_flags,
                                 arg_pager_flags,
                                 /*flags=*/ 0);
@@ -2279,6 +2282,8 @@ static int help(int argc, char *argv[], void *userdata) {
                "     --generators[=BOOL]   Do [not] run unit generators (requires privileges)\n"
                "     --iterations=N        Show the specified number of iterations\n"
                "     --base-time=TIMESTAMP Calculate calendar times relative to specified time\n"
+               "     --profile=name|PATH     Include the specified profile in the\n"
+               "                             security review of the unit(s)\n"
                "\nSee the %s for details.\n"
                , program_invocation_short_name
                , ansi_highlight()
@@ -2316,6 +2321,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_THRESHOLD,
                 ARG_SECURITY_POLICY,
                 ARG_JSON,
+                ARG_PROFILE,
         };
 
         static const struct option options[] = {
@@ -2343,6 +2349,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "iterations",       required_argument, NULL, ARG_ITERATIONS       },
                 { "base-time",        required_argument, NULL, ARG_BASE_TIME        },
                 { "json",             required_argument, NULL, ARG_JSON             },
+                { "profile",          required_argument, NULL, ARG_PROFILE          },
                 {}
         };
 
@@ -2516,6 +2523,24 @@ static int parse_argv(int argc, char *argv[]) {
                         r = parse_timestamp(optarg, &arg_base_time);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to parse --base-time= parameter: %s", optarg);
+
+                        break;
+
+                case ARG_PROFILE:
+                        if (isempty(optarg))
+                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Profile file name is empty");
+
+                        if (is_path(optarg)) {
+                                r = parse_path_argument_and_warn(optarg, /* suppress_root= */ false, &arg_profile);
+                                if (r < 0)
+                                        return r;
+                                if (!endswith(arg_profile, ".conf"))
+                                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Profile file name must end with .conf: %s", arg_profile);
+                        } else {
+                                r = free_and_strdup(&arg_profile, optarg);
+                                if (r < 0)
+                                        return log_oom();
+                        }
 
                         break;
 
