@@ -2174,9 +2174,11 @@ static int do_security(int argc, char *argv[], void *userdata) {
         int r;
         unsigned line, column;
 
-        r = acquire_bus(&bus, NULL);
-        if (r < 0)
-                return bus_log_connect_error(r);
+        if (!arg_offline) {
+                r = acquire_bus(&bus, NULL);
+                if (r < 0)
+                        return bus_log_connect_error(r);
+        }
 
         (void) pager_open(arg_pager_flags);
 
