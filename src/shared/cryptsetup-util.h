@@ -79,6 +79,8 @@ int cryptsetup_set_minimal_pbkdf(struct crypt_device *cd);
 int cryptsetup_get_token_as_json(struct crypt_device *cd, int idx, const char *verify_type, JsonVariant **ret);
 int cryptsetup_add_token_json(struct crypt_device *cd, JsonVariant *v);
 
+int opal_lock_unlock(struct crypt_device *cd, int fd, bool lock, bool pass_volume_key, int opal_segment, int keyslot, const char *passphrase, size_t passphrase_length);
+
 #else
 
 /* If libcryptsetup is not available, let's at least define the basic type and NOP destructors for it, to

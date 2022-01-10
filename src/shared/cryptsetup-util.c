@@ -1,10 +1,15 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+#include <linux/sed-opal.h>
+#include <sys/ioctl.h>
+
 #include "alloc-util.h"
 #include "cryptsetup-util.h"
 #include "dlfcn-util.h"
+#include "fd-util.h"
 #include "log.h"
 #include "parse-util.h"
+#include "string-table.h"
 
 #if HAVE_LIBCRYPTSETUP
 static void *cryptsetup_dl = NULL;
@@ -278,3 +283,148 @@ int cryptsetup_get_keyslot_from_token(JsonVariant *v) {
 
         return keyslot;
 }
+
+#if HAVE_LIBCRYPTSETUP
+/* Error codes are defined in the specification:
+ * TCG_Storage_Architecture_Core_Spec_v2.01_r1.00
+ * Section 5.1.5: Method Status Codes
+ * Names and values from table 166 */
+typedef enum OpalStatus {
+        OPAL_STATUS_SUCCESS,
+        OPAL_STATUS_NOT_AUTHORIZED,
+        OPAL_STATUS_OBSOLETE0, /* Undefined but possible retun values are just called 'obsolete' */
+        OPAL_STATUS_SP_BUSY,
+        OPAL_STATUS_SP_FAILED,
+        OPAL_STATUS_SP_DISABLED,
+        OPAL_STATUS_SP_FROZEN,
+        OPAL_STATUS_NO_SESSIONS_AVAILABLE,
+        OPAL_STATUS_UNIQUENESS_CONFLICT,
+        OPAL_STATUS_INSUFFICIENT_SPACE,
+        OPAL_STATUS_INSUFFICIENT_ROWS,
+        OPAL_STATUS_INVALID_PARAMETER,
+        OPAL_STATUS_OBSOLETE1,
+        OPAL_STATUS_OBSOLETE2,
+        OPAL_STATUS_TPER_MALFUNCTION,
+        OPAL_STATUS_TRANSACTION_FAILURE,
+        OPAL_STATUS_RESPONSE_OVERFLOW,
+        OPAL_STATUS_AUTHORITY_LOCKED_OUT,
+        OPAL_STATUS_FAIL = 0x3F,
+        _OPAL_STATUS_MAX,
+        _OPAL_STATUS_INVALID = -EINVAL,
+} OpalStatus;
+
+static const char* const opal_status_table[_OPAL_STATUS_MAX] = {
+        [OPAL_STATUS_SUCCESS]               = "success",
+        [OPAL_STATUS_NOT_AUTHORIZED]        = "not authorized",
+        [OPAL_STATUS_OBSOLETE0]             = "obsolete",
+        [OPAL_STATUS_SP_BUSY]               = "SP busy",
+        [OPAL_STATUS_SP_FAILED]             = "SP failed",
+        [OPAL_STATUS_SP_DISABLED]           = "SP disabled",
+        [OPAL_STATUS_SP_FROZEN]             = "SP frozen",
+        [OPAL_STATUS_NO_SESSIONS_AVAILABLE] = "no sessions available",
+        [OPAL_STATUS_UNIQUENESS_CONFLICT]   = "uniqueness conflict",
+        [OPAL_STATUS_INSUFFICIENT_SPACE]    = "insufficient space",
+        [OPAL_STATUS_INSUFFICIENT_ROWS]     = "insufficient rows",
+        [OPAL_STATUS_INVALID_PARAMETER]     = "invalid parameter",
+        [OPAL_STATUS_OBSOLETE1]             = "obsolete",
+        [OPAL_STATUS_OBSOLETE2]             = "obsolete",
+        [OPAL_STATUS_TPER_MALFUNCTION]      = "TPer malfunction",
+        [OPAL_STATUS_TRANSACTION_FAILURE]   = "transaction failure",
+        [OPAL_STATUS_RESPONSE_OVERFLOW]     = "response overflow",
+        [OPAL_STATUS_AUTHORITY_LOCKED_OUT]  = "authority locked out",
+        [OPAL_STATUS_FAIL]                  = "unknown failure",
+};
+
+const char *opal_status_to_string(int t) _const_;
+DEFINE_STRING_TABLE_LOOKUP_TO_STRING(opal_status, OpalStatus);
+
+/* The LUKS volume key is configured as the OPAL locking range passphrase, use it to lock/unlock the range. */
+int opal_lock_unlock(
+                struct crypt_device *cd,
+                int fd,
+                bool lock,
+                bool pass_volume_key,
+                int opal_segment,
+                int keyslot,
+                const char *passphrase,
+                size_t passphrase_length) {
+
+        if (opal_segment == -1)
+                return 0; /* Nothing to do. */
+
+        assert(cd);
+        assert(passphrase || passphrase_length == 0);
+
+        struct opal_lock_unlock unlock = {
+                .l_state = lock ? OPAL_LK : OPAL_RW,
+                .session = {
+                        .who = OPAL_ADMIN1,
+                        .opal_key = {
+                                .lr = opal_segment,
+                        },
+                },
+        };
+        _cleanup_(erase_and_freep) char *volume_key = NULL;
+        _cleanup_close_ int crypt_fd = -1;
+        const char *device_name;
+        size_t volume_key_size;
+        int r;
+
+        r = dlopen_cryptsetup();
+        if (r < 0)
+                return r;
+
+        volume_key_size = sym_crypt_get_volume_key_size(cd);
+        if (volume_key_size > OPAL_KEY_MAX)
+                return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid volume key size: %zu > %d", volume_key_size, OPAL_KEY_MAX);
+
+        if (volume_key_size > 0 && !pass_volume_key) {
+                volume_key = malloc(volume_key_size);
+                if (!volume_key)
+                        return log_oom();
+
+                r = sym_crypt_volume_key_get(cd, keyslot, volume_key, &volume_key_size, passphrase, passphrase_length);
+                if (r < 0)
+                        return log_debug_errno(r, "Failed to get volume key: %m");
+
+                unlock.session.opal_key.key_len = volume_key_size;
+                memcpy(unlock.session.opal_key.key, volume_key, volume_key_size);
+        } else if (volume_key_size > 0) {
+                if (passphrase_length > OPAL_KEY_MAX)
+                        return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Invalid passphrase length: %zu > %d", passphrase_length, OPAL_KEY_MAX);
+
+                unlock.session.opal_key.key_len = passphrase_length;
+                memcpy(unlock.session.opal_key.key, passphrase, passphrase_length);
+        }
+
+        device_name = sym_crypt_get_device_name(cd);
+        if (!device_name)
+                return log_debug_errno(errno, "Failed to get device name: %m");
+
+        if (fd < 0) {
+                crypt_fd = open(device_name, O_RDWR);
+                if (crypt_fd < 0)
+                        return log_debug_errno(errno, "Failed to open device '%s': %m", device_name);
+                fd = crypt_fd;
+        }
+
+        r = ioctl(fd, IOC_OPAL_LOCK_UNLOCK, &unlock);
+        if (r < 0)
+                return log_debug_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "OPAL not supported on this kernel version, refusing.");
+        if (r == OPAL_STATUS_NOT_AUTHORIZED) /* We'll try again with a different key. */
+                return log_debug_errno(SYNTHETIC_ERRNO(EPERM), "Failed to %slock OPAL device '%s': %m", lock ? "" : "un", device_name);
+        if (r != OPAL_STATUS_SUCCESS) /* This will be propagated, log the useful string immediately. */
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to %slock OPAL device '%s': %s", lock ? "" : "un", device_name, opal_status_to_string(r));
+
+        if (lock)
+                return 0;
+
+        /* If we are unlocking, also tell the kernel to automatically unlock when resuming
+         * from suspend, otherwise the drive will be locked and everything will go up in flames */
+        r = ioctl(fd, IOC_OPAL_SAVE, &unlock);
+        if (r != OPAL_STATUS_SUCCESS) /* This will be propagated, log the useful string immediately. */
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to prepare OPAL device '%s' for sleep resume: %s", device_name, opal_status_to_string(r));
+
+        return 0;
+}
+#endif
