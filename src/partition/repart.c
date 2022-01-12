@@ -144,6 +144,9 @@ typedef enum EncryptMode {
         ENCRYPT_KEY_FILE,
         ENCRYPT_TPM2,
         ENCRYPT_KEY_FILE_TPM2,
+        ENCRYPT_OPAL_KEY_FILE,
+        ENCRYPT_OPAL_TPM2,
+        ENCRYPT_OPAL_KEY_FILE_TPM2,
         _ENCRYPT_MODE_MAX,
         _ENCRYPT_MODE_INVALID = -EINVAL,
 } EncryptMode;
@@ -244,6 +247,9 @@ static const char *encrypt_mode_table[_ENCRYPT_MODE_MAX] = {
         [ENCRYPT_KEY_FILE] = "key-file",
         [ENCRYPT_TPM2] = "tpm2",
         [ENCRYPT_KEY_FILE_TPM2] = "key-file+tpm2",
+        [ENCRYPT_OPAL_KEY_FILE] = "opal+key-file",
+        [ENCRYPT_OPAL_TPM2] = "opal+tpm2",
+        [ENCRYPT_OPAL_KEY_FILE_TPM2] = "opal+key-file+tpm2",
 };
 
 static const char *verity_mode_table[_VERITY_MODE_MAX] = {
@@ -2938,22 +2944,31 @@ static int partition_encrypt(
                 Context *context,
                 Partition *p,
                 const char *node,
+                int device_fd,
                 struct crypt_device **ret_cd,
                 char **ret_volume,
                 int *ret_fd) {
 #if HAVE_LIBCRYPTSETUP
         _cleanup_(sym_crypt_freep) struct crypt_device *cd = NULL;
         _cleanup_(erase_and_freep) void *volume_key = NULL;
-        _cleanup_free_ char *dm_name = NULL, *vol = NULL;
+        _cleanup_free_ char *dm_name = NULL, *vol = NULL, *opal_id = NULL;
         size_t volume_key_size = 256 / 8;
         sd_id128_t uuid;
-        int r;
+        int r, opal_segment = 1;
+        bool is_opal;
 
         assert(context);
         assert(p);
         assert(p->encrypt != ENCRYPT_OFF);
 
         log_debug("Encryption mode for partition %" PRIu64 ": %s", p->partno, encrypt_mode_to_string(p->encrypt));
+
+        is_opal = IN_SET(p->encrypt, ENCRYPT_OPAL_KEY_FILE, ENCRYPT_OPAL_TPM2, ENCRYPT_OPAL_KEY_FILE_TPM2);
+        if (is_opal) {
+                asprintf(&opal_id, "opal-%d", opal_segment);
+                if (!opal_id)
+                        return log_oom();
+        }
 
         r = dlopen_cryptsetup();
         if (r < 0)
@@ -2998,11 +3013,12 @@ static int partition_encrypt(
                          &(struct crypt_params_luks2) {
                                  .label = strempty(p->new_label),
                                  .sector_size = context->sector_size,
+                                 .subsystem = opal_id,
                          });
         if (r < 0)
                 return log_error_errno(r, "Failed to LUKS2 format future partition: %m");
 
-        if (IN_SET(p->encrypt, ENCRYPT_KEY_FILE, ENCRYPT_KEY_FILE_TPM2)) {
+        if (IN_SET(p->encrypt, ENCRYPT_KEY_FILE, ENCRYPT_KEY_FILE_TPM2, ENCRYPT_OPAL_KEY_FILE, ENCRYPT_OPAL_KEY_FILE_TPM2)) {
                 r = sym_crypt_keyslot_add_by_volume_key(
                                 cd,
                                 CRYPT_ANY_SLOT,
@@ -3014,7 +3030,7 @@ static int partition_encrypt(
                         return log_error_errno(r, "Failed to add LUKS2 key: %m");
         }
 
-        if (IN_SET(p->encrypt, ENCRYPT_TPM2, ENCRYPT_KEY_FILE_TPM2)) {
+        if (IN_SET(p->encrypt, ENCRYPT_TPM2, ENCRYPT_KEY_FILE_TPM2, ENCRYPT_OPAL_TPM2, ENCRYPT_OPAL_KEY_FILE_TPM2)) {
 #if HAVE_TPM2
                 _cleanup_(erase_and_freep) char *base64_encoded = NULL;
                 _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
@@ -3088,6 +3104,20 @@ static int partition_encrypt(
                 return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
                                        "Support for TPM2 enrollment not enabled.");
 #endif
+        }
+
+        if (is_opal) {
+                r = cryptsetup_make_linear(cd);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to update LUKS2 headers for OPAL: %m");
+
+                r = opal_setup_range(cd, device_fd, p->current_size, opal_segment, volume_key, volume_key_size);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to setup OPAL range: %m");
+
+                r = opal_lock_unlock(cd, device_fd, /* lock= */ false, /* pass_volume_key */ true, opal_segment, CRYPT_ANY_SLOT, volume_key, volume_key_size);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to unlock OPAL segment: %m");
         }
 
         r = sym_crypt_activate_by_volume_key(
@@ -3179,7 +3209,7 @@ static int context_copy_blocks(Context *context) {
                         if (r < 0)
                                 return log_error_errno(r, "Failed to make loopback device of future partition %" PRIu64 ": %m", p->partno);
 
-                        r = partition_encrypt(context, p, d->node, &cd, &encrypted, &encrypted_dev_fd);
+                        r = partition_encrypt(context, p, d->node, whole_fd, &cd, &encrypted, &encrypted_dev_fd);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to encrypt device: %m");
 
@@ -3481,7 +3511,7 @@ static int context_mkfs(Context *context) {
                         return log_error_errno(r, "Failed to make loopback device of future partition %" PRIu64 ": %m", p->partno);
 
                 if (p->encrypt != ENCRYPT_OFF) {
-                        r = partition_encrypt(context, p, d->node, &cd, &encrypted, &encrypted_dev_fd);
+                        r = partition_encrypt(context, p, d->node, fd, &cd, &encrypted, &encrypted_dev_fd);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to encrypt device: %m");
 
@@ -3539,6 +3569,10 @@ static int context_mkfs(Context *context) {
                         if (fsync(encrypted_dev_fd) < 0)
                                 return log_error_errno(errno, "Failed to synchronize LUKS volume: %m");
                         encrypted_dev_fd = safe_close(encrypted_dev_fd);
+
+                        // r = opal_lock_unlock(cd, device_fd, /* lock= */ true, /* pass_volume_key */ true, opal_segment, CRYPT_ANY_SLOT, volume_key, volume_key_size);
+                        // if (r < 0)
+                        //         return log_error_errno(r, "Failed to unlock OPAL segment: %m");
 
                         r = deactivate_luks(cd, encrypted);
                         if (r < 0)

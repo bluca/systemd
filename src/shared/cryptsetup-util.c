@@ -2,6 +2,8 @@
 
 #include <linux/sed-opal.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "alloc-util.h"
 #include "cryptsetup-util.h"
@@ -9,6 +11,7 @@
 #include "fd-util.h"
 #include "log.h"
 #include "parse-util.h"
+#include "sha256.h"
 #include "string-table.h"
 
 #if HAVE_LIBCRYPTSETUP
@@ -20,6 +23,7 @@ int (*sym_crypt_activate_by_signed_key)(struct crypt_device *cd, const char *nam
 #endif
 int (*sym_crypt_activate_by_volume_key)(struct crypt_device *cd, const char *name, const char *volume_key, size_t volume_key_size, uint32_t flags);
 int (*sym_crypt_deactivate_by_name)(struct crypt_device *cd, const char *name, uint32_t flags);
+int (*sym_crypt_dump_json)(struct crypt_device *cd, const char **json, uint32_t flags);
 int (*sym_crypt_format)(struct crypt_device *cd, const char *type, const char *cipher, const char *cipher_mode, const char *uuid, const char *volume_key, size_t volume_key_size, void *params);
 void (*sym_crypt_free)(struct crypt_device *cd);
 const char *(*sym_crypt_get_cipher)(struct crypt_device *cd);
@@ -54,6 +58,7 @@ int (*sym_crypt_token_max)(const char *type);
 #endif
 crypt_token_info (*sym_crypt_token_status)(struct crypt_device *cd, int token, const char **type);
 int (*sym_crypt_volume_key_get)(struct crypt_device *cd, int keyslot, char *volume_key, size_t *volume_key_size, const char *passphrase, size_t passphrase_size);
+int (*sym_crypt_get_metadata_size)(struct crypt_device *cd, uint64_t *, uint64_t *);
 
 static void cryptsetup_log_glue(int level, const char *msg, void *usrptr) {
 
@@ -206,6 +211,7 @@ int dlopen_cryptsetup(void) {
 #endif
                         DLSYM_ARG(crypt_activate_by_volume_key),
                         DLSYM_ARG(crypt_deactivate_by_name),
+                        DLSYM_ARG(crypt_dump_json),
                         DLSYM_ARG(crypt_format),
                         DLSYM_ARG(crypt_free),
                         DLSYM_ARG(crypt_get_cipher),
@@ -239,7 +245,8 @@ int dlopen_cryptsetup(void) {
                         DLSYM_ARG(crypt_token_max),
 #endif
                         DLSYM_ARG(crypt_token_status),
-                        DLSYM_ARG(crypt_volume_key_get));
+                        DLSYM_ARG(crypt_volume_key_get),
+                        DLSYM_ARG(crypt_get_metadata_size));
         if (r <= 0)
                 return r;
 
@@ -452,6 +459,280 @@ int opal_psid_wipe(const char *psid, const char *device) {
                 return log_debug_errno(SYNTHETIC_ERRNO(EPERM), "Failed to reset OPAL device '%s', incorrect PSID?", device);
         if (r != OPAL_STATUS_SUCCESS) /* This will be propagated, log the useful string immediately. */
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to reset OPAL device '%s' with PSID: %s", device, opal_status_to_string(r));
+
+        return 0;
+}
+
+int opal_setup_range(
+                struct crypt_device *cd,
+                int fd,
+                uint64_t device_size,
+                int opal_segment,
+                const void *volume_key,
+                size_t volume_key_size) {
+
+        if (opal_segment == -1)
+                return 0; /* Nothing to do. */
+
+        assert(cd);
+        assert(fd >= 0);
+        assert(device_size > 0);
+        assert(volume_key || volume_key_size == 0);
+
+        struct opal_user_lr_setup setup = {
+                .RLE = 1,
+                .WLE = 1,
+                .session = {
+                        .who = OPAL_ADMIN1,
+                        .opal_key = {
+                                .lr = opal_segment,
+                                .key_len = volume_key_size,
+                        },
+                },
+        };
+        uint64_t metadata_size, keyslots_size;
+        const char *device_name;
+        int r;
+
+        r = dlopen_cryptsetup();
+        if (r < 0)
+                return r;
+
+        device_name = sym_crypt_get_device_name(cd);
+        if (!device_name)
+                return log_debug_errno(errno, "Failed to get device name: %m");
+
+        r = sym_crypt_get_metadata_size(cd, &metadata_size, &keyslots_size);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to get LUKS2 metadata size: %m");
+        setup.range_length = device_size - metadata_size - keyslots_size;
+        setup.range_start = sym_crypt_get_data_offset(cd);
+
+        memcpy(setup.session.opal_key.key, volume_key, volume_key_size);
+
+        struct opal_lr_act activate = {
+                .key = setup.session.opal_key,
+                .num_lrs = 1,
+        };
+
+        r = ioctl(fd, IOC_OPAL_TAKE_OWNERSHIP, &setup.session.opal_key);
+        if (r < 0)
+                return log_debug_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "OPAL not supported on this kernel version, refusing.");
+        if (r == OPAL_STATUS_NOT_AUTHORIZED) /* We'll try again with a different key. */
+                return log_debug_errno(SYNTHETIC_ERRNO(EPERM), "Failed to take ownership of OPAL device '%s': %m", device_name);
+        if (r != OPAL_STATUS_SUCCESS) /* This will be propagated, log the useful string immediately. */
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to take ownership of OPAL device '%s': %s", device_name, opal_status_to_string(r));
+
+        r = ioctl(fd, IOC_OPAL_ACTIVATE_LSP, &activate);
+        if (r != OPAL_STATUS_SUCCESS) /* This will be propagated, log the useful string immediately. */
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to activate OPAL device '%s': %s", device_name, opal_status_to_string(r));
+
+        r = ioctl(fd, IOC_OPAL_LR_SETUP, &setup);
+        if (r != OPAL_STATUS_SUCCESS) /* This will be propagated, log the useful string immediately. */
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                       "Failed to setup locking range of length %llu at offset %llu on OPAL device '%s': %s",
+                                       setup.range_length, setup.range_start, device_name, opal_status_to_string(r));
+
+        return 0;
+}
+
+/* Definitions from https://gitlab.com/cryptsetup/LUKS2-docs/-/blob/master/luks2_doc_wip.pdf
+ * The LUKS2 header is composed of a binary header (fixed in size at 4096 bytes) and
+ * a variable JSON area, with duplication for redundancy.
+ * The JSON area is variable but in fixed increments, so the actual storage area is
+ * increased or decreased only when it goes above/below a certain threshold (e.g. the
+ * first one is 16KB). In this helper function we strictly shrink the JSON, so we do
+ * not change the disk allocation, but simply adjust the padding. */
+#define LUKS2_MAGIC_ONE "LUKS\xba\xbe"
+#define LUKS2_MAGIC_TWO "SKUL\xba\xbe"
+#define LUKS2_MAGIC_SIZE 6
+#define LUKS2_UUID_SIZE 40
+#define LUKS2_LABEL_SIZE 48
+#define LUKS2_SALT_SIZE 64
+#define LUKS2_CHECKSUM_ALGORITHM_SIZE 32
+#define LUKS2_CHECKSUM_SIZE 64
+
+struct luks2_binary_header {
+        char magic_string[LUKS2_MAGIC_SIZE];
+        uint16_t luks_version;
+        uint64_t header_size;
+        uint64_t seqid;
+        char label[LUKS2_LABEL_SIZE];
+        char checksum_algorithm[LUKS2_CHECKSUM_ALGORITHM_SIZE];
+        uint8_t salt[LUKS2_SALT_SIZE];
+        char uuid[LUKS2_UUID_SIZE];
+        char subsystem[LUKS2_LABEL_SIZE];
+        uint64_t header_offset;
+        char padding_before[184];
+        uint8_t checksum[LUKS2_CHECKSUM_SIZE];
+        char padding_after[7*512];
+} __attribute__ ((packed));
+
+static int write_header(int fd, const char *json, off_t *offset) {
+        size_t header_size, json_area_size = 0;
+        struct luks2_binary_header *header;
+        char *luks_meta_raw = NULL;
+        int r;
+
+        assert(fd >= 0);
+        assert(!isempty(json));
+        assert(offset);
+
+        header = mmap(NULL, sizeof(struct luks2_binary_header), PROT_READ | PROT_WRITE, MAP_SHARED, fd, *offset);
+        if (header == MAP_FAILED)
+                return log_debug_errno(errno, "Failed to read LUKS2 binary header: %m");
+
+        /* Sanity checks */
+        if (memcmp(header->magic_string, *offset == 0 ? LUKS2_MAGIC_ONE : LUKS2_MAGIC_TWO, LUKS2_MAGIC_SIZE) != 0) {
+                r = log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "LUKS2 binary header magic string is invalid.");
+                goto cleanup;
+        }
+
+        if (be16toh(header->luks_version) != 2) {
+                r = log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "LUKS2 binary header version is invalid.");
+                goto cleanup;
+        }
+
+        header_size = be64toh(header->header_size);
+        json_area_size = header_size - sizeof(struct luks2_binary_header);
+
+        luks_meta_raw = mmap(NULL, json_area_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, *offset + sizeof(struct luks2_binary_header));
+        if (luks_meta_raw == MAP_FAILED) {
+                r = log_debug_errno(errno, "Failed to read LUKS2 json area: %m");
+                goto cleanup;
+        }
+
+        if (!streq(header->checksum_algorithm, "sha256")) {
+                r = log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Unsupported checksum algorithm: %s", header->checksum_algorithm);
+                goto cleanup;
+        }
+
+        /* The checksum is calculated on the full header, with the checksum zeroed. */
+        memset(header->checksum, 0, LUKS2_CHECKSUM_SIZE);
+
+        memset(luks_meta_raw, 0, json_area_size - strlen(json));
+        memcpy(luks_meta_raw, json, strlen(json));
+
+        /* As per specification, the sequence number is incremented on any on-disk change. */
+        uint64_t seqid = be64toh(header->seqid);
+        header->seqid = htobe64(++seqid);
+
+        /* Finally, update the checksum. We only support sha256 for now. */
+        struct sha256_ctx hash;
+        sha256_init_ctx(&hash);
+        sha256_process_bytes(header, sizeof(struct luks2_binary_header), &hash);
+        sha256_process_bytes(luks_meta_raw, json_area_size, &hash);
+        sha256_finish_ctx(&hash, header->checksum);
+
+        *offset = header_size;
+        r = 0;
+
+cleanup:
+        if (munmap(header, sizeof(struct luks2_binary_header)) < 0)
+                return log_debug_errno(errno, "Failed to munmap LUKS2 binary header: %m");
+
+        if (munmap(luks_meta_raw, json_area_size) < 0)
+                return log_debug_errno(errno, "Failed to munmap LUKS2 json area: %m");
+
+        return r;
+}
+
+/* Overwrite the LUKS2 header on disk, changing the dm-crypt segment to dm-linear. */
+int cryptsetup_make_linear(struct crypt_device *cd) {
+        _cleanup_(json_variant_unrefp) JsonVariant *luks_meta = NULL;
+        const char *device_name, *json;
+        _cleanup_close_ int fd = -1;
+        int r;
+
+        assert(cd);
+
+        /* The LUKS JSON defines how to map a section with a 'segment' object that
+         * can be 'crypt' (will use the dm-crypt kernel driver) or 'linear' (will
+         * use the dm-linear kernel driver).
+         * We replace the 'crypt' segment with a 'linear' one, as OPAL does the
+         * encryption/decryption in hardware. Note that only one segment is supported
+         * for normal modes of operation for LUKS2, and multiple segments are used
+         * only temporarily for the re-encryption workflow, which is not relevant
+         * for our use case. */
+        r = sym_crypt_dump_json(cd, &json, 0);
+        if (r < 0)
+                return log_error_errno(errno, "Failed to dump LUKS2 JSON: %m");
+
+        r = json_parse(json, 0, &luks_meta, NULL, NULL);
+        if (r < 0)
+                return log_error_errno(r, "json_parse() failed: %m");
+
+        JsonVariant *segments = json_variant_by_key(luks_meta, "segments");
+        if (!segments)
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "No segments found in LUKS2 header");
+
+        if (json_variant_elements(segments) != 2)
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Expected exactly one segment in LUKS2 header");
+
+        JsonVariant *segment_index = json_variant_by_index(segments, 0);
+        if (!segment_index)
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "No segment index found in LUKS2 header");
+
+        JsonVariant *segment_object = json_variant_by_index(segments, 1);
+        if (!segment_object)
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "No segment object found in LUKS2 header");
+
+        JsonVariant *segment_type = json_variant_by_key(segment_object, "type");
+        if (!segment_type || !json_variant_is_string(segment_type) || !streq(json_variant_string(segment_type), "crypt"))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "No 'crypt' segment type found in LUKS2 header");
+
+        JsonVariant *json_offset = json_variant_by_key(segment_object, "offset");
+        if (!json_offset)
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "No 'offset' found in 'crypt' segment in LUKS2 header");
+
+        JsonVariant *json_size = json_variant_by_key(segment_object, "size");
+        if (!json_size)
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "No 'size' found in 'crypt' segment in LUKS2 header");
+
+        _cleanup_(json_variant_unrefp) JsonVariant *linear_segment = NULL;
+        r = json_build(&linear_segment,
+                       JSON_BUILD_OBJECT(JSON_BUILD_PAIR("segments",
+                                                         JSON_BUILD_OBJECT(JSON_BUILD_PAIR(json_variant_string(segment_index),
+                                                                                           JSON_BUILD_OBJECT(JSON_BUILD_PAIR("type", JSON_BUILD_STRING("linear")),
+                                                                                                             JSON_BUILD_PAIR("offset", JSON_BUILD_STRING(json_variant_string(json_offset))),
+                                                                                                             JSON_BUILD_PAIR("size", JSON_BUILD_STRING(json_variant_string(json_size)))))))));
+        if (r < 0)
+                return log_error_errno(r, "Failed to build JSON object: %m");
+
+        /* The new segments object will overwrite the old one. */
+        r = json_variant_merge(&luks_meta, linear_segment);
+        if (r < 0)
+                return log_error_errno(r, "json_variant_merge of package meta with buildid failed: %m");
+
+        _cleanup_free_ char *luks_meta_mangled = NULL;
+        r = json_variant_format(luks_meta, 0, &luks_meta_mangled);
+        if (r < 0)
+                return log_error_errno(r, "json_variant_format failed: %m");
+
+        device_name = sym_crypt_get_device_name(cd);
+        if (!device_name)
+                return log_error_errno(errno, "Failed to get device name: %m");
+
+        fd = open(device_name, O_RDWR);
+        if (fd < 0)
+                return log_error_errno(errno, "Failed to open device '%s': %m", device_name);
+
+        /* The first binary header is at offset zero, the second one is after the first
+         * binary plus the first JSON area. This helper will return the offset for the
+         * next header. */
+        off_t offset = 0;
+        r = write_header(fd, luks_meta_mangled, &offset);
+        if (r < 0)
+                return log_error_errno(r, "Failed to write first LUKS2 header: %m");
+
+        r = write_header(fd, luks_meta_mangled, &offset);
+        if (r < 0)
+                return log_error_errno(r, "Failed to write second LUKS2 header: %m");
+
+        /* Load the new headers in the crypt data structure */
+        r = sym_crypt_load(cd, CRYPT_LUKS2, NULL);
+        if (r < 0)
+                return log_error_errno(r, "Failed to load LUKS2 superblock: %m");
 
         return 0;
 }

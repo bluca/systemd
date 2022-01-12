@@ -22,6 +22,7 @@ extern int (*sym_crypt_activate_by_signed_key)(struct crypt_device *cd, const ch
 #endif
 extern int (*sym_crypt_activate_by_volume_key)(struct crypt_device *cd, const char *name, const char *volume_key, size_t volume_key_size, uint32_t flags);
 extern int (*sym_crypt_deactivate_by_name)(struct crypt_device *cd, const char *name, uint32_t flags);
+extern int (*sym_crypt_dump_json)(struct crypt_device *cd, const char **json, uint32_t flags);
 extern int (*sym_crypt_format)(struct crypt_device *cd, const char *type, const char *cipher, const char *cipher_mode, const char *uuid, const char *volume_key, size_t volume_key_size, void *params);
 extern void (*sym_crypt_free)(struct crypt_device *cd);
 extern const char *(*sym_crypt_get_cipher)(struct crypt_device *cd);
@@ -53,6 +54,7 @@ extern int (*sym_crypt_token_json_get)(struct crypt_device *cd, int token, const
 extern int (*sym_crypt_token_json_set)(struct crypt_device *cd, int token, const char *json);
 #if HAVE_CRYPT_TOKEN_MAX
 extern int (*sym_crypt_token_max)(const char *type);
+extern int (*sym_crypt_get_metadata_size)(struct crypt_device *cd, uint64_t *, uint64_t *);
 #else
 /* As a fallback, use the same hard-coded value libcryptsetup uses internally. */
 static inline int crypt_token_max(_unused_ const char *type) {
@@ -81,6 +83,8 @@ int cryptsetup_add_token_json(struct crypt_device *cd, JsonVariant *v);
 
 int opal_lock_unlock(struct crypt_device *cd, int fd, bool lock, bool pass_volume_key, int opal_segment, int keyslot, const char *passphrase, size_t passphrase_length);
 int opal_psid_wipe(const char *psid, const char *device);
+int opal_setup_range(struct crypt_device *cd, int fd, uint64_t device_size, int opal_segment, const void *volume_key, size_t volume_key_size);
+int cryptsetup_make_linear(struct crypt_device *cd);
 
 #else
 
