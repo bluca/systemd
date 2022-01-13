@@ -50,6 +50,7 @@ static int arg_fido2_cred_alg = COSE_ES256;
 #else
 static int arg_fido2_cred_alg = 0;
 #endif
+static char *arg_wipe_opal = NULL;
 
 assert_cc(sizeof(arg_wipe_slots_mask) * 8 >= _ENROLL_TYPE_MAX);
 
@@ -61,6 +62,7 @@ STATIC_DESTRUCTOR_REGISTER(arg_tpm2_public_key, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_tpm2_signature, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_node, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_wipe_slots, freep);
+STATIC_DESTRUCTOR_REGISTER(arg_wipe_opal, erase_and_freep);
 
 static bool wipe_requested(void) {
         return arg_n_wipe_slots > 0 ||
@@ -131,6 +133,8 @@ static int help(void) {
                "                       Whether to require entering a PIN to unlock the volume\n"
                "     --wipe-slot=SLOT1,SLOT2,…\n"
                "                       Wipe specified slots\n"
+               "     --wipe-opal=PSID\n"
+               "                       Wipe OPAL drive using PSID code\n"
                "\nSee the %s for details.\n",
                program_invocation_short_name,
                ansi_highlight(),
@@ -160,6 +164,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_FIDO2_WITH_UP,
                 ARG_FIDO2_WITH_UV,
                 ARG_FIDO2_CRED_ALG,
+                ARG_WIPE_OPAL,
         };
 
         static const struct option options[] = {
@@ -181,6 +186,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "tpm2-signature",               required_argument, NULL, ARG_TPM2_SIGNATURE        },
                 { "tpm2-with-pin",                required_argument, NULL, ARG_TPM2_PIN              },
                 { "wipe-slot",                    required_argument, NULL, ARG_WIPE_SLOT             },
+                { "wipe-opal",                    required_argument, NULL, ARG_WIPE_OPAL             },
                 {}
         };
 
@@ -423,6 +429,18 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
                 }
 
+                case ARG_WIPE_OPAL:
+                        if (arg_wipe_opal)
+                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Multiple PSIDs specified at once, refusing.");
+                        if (isempty(optarg))
+                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Specified PSID is empty.");
+
+                        arg_wipe_opal = strdup(optarg);
+                        if (!arg_wipe_opal)
+                                return log_oom();
+
+                        break;
+
                 case '?':
                         return -EINVAL;
 
@@ -615,6 +633,19 @@ out:
         return 0;
 }
 
+static int wipe_opal(const char *psid, const char *device) {
+        int r;
+
+        assert(psid);
+        assert(device);
+
+        r = opal_psid_wipe(psid, device);
+        if (r < 0)
+                return log_error_errno(r, "Failed to wipe OPAL device '%s' with supplied PSID: %m", device);
+
+        return 0;
+}
+
 static int run(int argc, char *argv[]) {
         _cleanup_(crypt_freep) struct crypt_device *cd = NULL;
         _cleanup_(erase_and_freep) void *vk = NULL;
@@ -630,6 +661,9 @@ static int run(int argc, char *argv[]) {
                 return r;
 
         cryptsetup_enable_logging(NULL);
+
+        if (arg_wipe_opal)
+                return wipe_opal(arg_wipe_opal, arg_node);
 
         if (arg_enroll_type < 0)
                 r = prepare_luks(&cd, NULL, NULL); /* No need to unlock device if we don't need the volume key because we don't need to enroll anything */

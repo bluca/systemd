@@ -427,4 +427,32 @@ int opal_lock_unlock(
 
         return 0;
 }
+
+int opal_psid_wipe(const char *psid, const char *device) {
+        _cleanup_close_ int fd = -1;
+        struct opal_key reset = {
+                .lr = 0,
+        };
+        int r;
+
+        assert(psid);
+        assert(device);
+
+        reset.key_len = strlen(psid);
+        memcpy(reset.key, psid, reset.key_len);
+
+        fd = open(device, O_RDWR);
+        if (fd < 0)
+                return log_debug_errno(errno, "Failed to open device '%s': %m", device);
+
+        r = ioctl(fd, IOC_OPAL_PSID_REVERT_TPR, &reset);
+        if (r < 0)
+                return log_debug_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "OPAL not supported on this kernel version, refusing.");
+        if (r == OPAL_STATUS_NOT_AUTHORIZED) /* We'll try again with a different key. */
+                return log_debug_errno(SYNTHETIC_ERRNO(EPERM), "Failed to reset OPAL device '%s', incorrect PSID?", device);
+        if (r != OPAL_STATUS_SUCCESS) /* This will be propagated, log the useful string immediately. */
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to reset OPAL device '%s' with PSID: %s", device, opal_status_to_string(r));
+
+        return 0;
+}
 #endif

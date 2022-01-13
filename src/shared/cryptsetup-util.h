@@ -80,6 +80,7 @@ int cryptsetup_get_token_as_json(struct crypt_device *cd, int idx, const char *v
 int cryptsetup_add_token_json(struct crypt_device *cd, JsonVariant *v);
 
 int opal_lock_unlock(struct crypt_device *cd, int fd, bool lock, bool pass_volume_key, int opal_segment, int keyslot, const char *passphrase, size_t passphrase_length);
+int opal_psid_wipe(const char *psid, const char *device);
 
 #else
 
