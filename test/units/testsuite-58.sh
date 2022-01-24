@@ -69,10 +69,14 @@ app1="/usr/share/app1.raw"
 portablectl attach --now --runtime --extension ${app1} ${root} app1
 
 systemctl is-active app1.service
+status="$(portablectl is-attached --extension ${app1} ${root})"
+[[ "${status}" == "running-runtime" ]]
 
 portablectl reattach --now --runtime --extension ${app1} ${root} app1
 
 systemctl is-active app1.service
+status="$(portablectl is-attached --extension ${app1} ${root})"
+[[ "${status}" == "running-runtime" ]]
 
 portablectl detach --now --runtime --extension ${app1} ${root} app1
 
