@@ -71,6 +71,7 @@ portablectl attach --now --runtime --extension ${app1} ${root} app1
 systemctl is-active app1.service
 status="$(portablectl is-attached --extension ${app1} ${root})"
 [[ "${status}" == "running-runtime" ]]
+portablectl inspect --cat --extension ${app1} ${root} app1 | grep -q -F "${app1}"
 
 portablectl reattach --now --runtime --extension ${app1} ${root} app1
 
