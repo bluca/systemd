@@ -81,6 +81,11 @@ status="$(portablectl is-attached --extension ${app1} ${root})"
 
 portablectl detach --now --runtime --extension ${app1} ${root} app1
 
+# Ensure that the combination of read-only images, state directory and dynamic user works, and that
+# state is retained. Check after detaching, as on slow systems (eg: sanitizers) it might take a while
+# after the service is attached before the file appears.
+grep -q -F baz /var/lib/private/app1/foo
+
 # portablectl also works with directory paths rather than images
 
 mkdir /tmp/rootdir /tmp/app1 /tmp/overlay

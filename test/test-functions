@@ -459,7 +459,7 @@ install_verity_minimal() {
         oldinitdir=$initdir
         rm -rfv $TESTDIR/minimal
         export initdir=$TESTDIR/minimal
-        mkdir -p $initdir/usr/lib/systemd/system $initdir/usr/lib/extension-release.d $initdir/etc $initdir/var/tmp $initdir/opt
+        mkdir -p $initdir/usr/lib/systemd/system $initdir/usr/lib/extension-release.d $initdir/etc $initdir/var/tmp $initdir/opt $initdir/var/lib/app1
         setup_basic_dirs
         install_basic_tools
         cp $os_release $initdir/usr/lib/os-release
@@ -501,11 +501,15 @@ EOF
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/opt/script0.sh
+TemporaryFileSystem=/var/lib
+StateDirectory=app0
+RuntimeDirectory=app0
 EOF
         cat <<EOF > $initdir/opt/script0.sh
 #!/bin/bash
 set -e
 test -e /usr/lib/os-release
+echo bar > \${STATE_DIRECTORY}/foo
 cat /usr/lib/extension-release.d/extension-release.app0
 EOF
         chmod +x "$initdir/opt/script0.sh"
@@ -522,11 +526,14 @@ EOF
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/opt/script1.sh
+StateDirectory=app1
+RuntimeDirectory=app1
 EOF
         cat <<EOF > $initdir/opt/script1.sh
 #!/bin/bash
 set -e
 test -e /usr/lib/os-release
+echo baz > \${STATE_DIRECTORY}/foo
 cat /usr/lib/extension-release.d/extension-release.app2
 EOF
         chmod +x $initdir/opt/script1.sh
