@@ -1335,7 +1335,7 @@ static int apply_one_mount(
                                 else
                                         q = touch(mount_entry_path(m));
 
-                                if (q < 0)
+                                if (q < 0 && q != -EEXIST)
                                         log_error_errno(q, "Failed to create destination mount point node '%s': %m",
                                                         mount_entry_path(m));
                                 else
