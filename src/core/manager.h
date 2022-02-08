@@ -242,6 +242,8 @@ struct Manager {
 
         usec_t watchdog[_WATCHDOG_TYPE_MAX];
         usec_t watchdog_overridden[_WATCHDOG_TYPE_MAX];
+        char *watchdog_pretimeout_governor;
+        char *watchdog_pretimeout_governor_overridden;
 
         dual_timestamp timestamps[_MANAGER_TIMESTAMP_MAX];
 
@@ -564,6 +566,8 @@ ManagerTimestamp manager_timestamp_initrd_mangle(ManagerTimestamp s);
 usec_t manager_get_watchdog(Manager *m, WatchdogType t);
 void manager_set_watchdog(Manager *m, WatchdogType t, usec_t timeout);
 int manager_override_watchdog(Manager *m, WatchdogType t, usec_t timeout);
+int manager_set_watchdog_pretimeout_governor(Manager *m, const char *governor);
+int manager_override_watchdog_pretimeout_governor(Manager *m, const char *governor);
 
 const char* oom_policy_to_string(OOMPolicy i) _const_;
 OOMPolicy oom_policy_from_string(const char *s) _pure_;

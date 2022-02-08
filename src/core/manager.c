@@ -1430,6 +1430,9 @@ Manager* manager_free(Manager *m) {
                 m->prefix[dt] = mfree(m->prefix[dt]);
         free(m->received_credentials);
 
+        free(m->watchdog_pretimeout_governor);
+        free(m->watchdog_pretimeout_governor_overridden);
+
         return mfree(m);
 }
 
@@ -3248,6 +3251,7 @@ int manager_serialize(
         (void) serialize_usec(f, "reboot-watchdog-overridden", m->watchdog_overridden[WATCHDOG_REBOOT]);
         (void) serialize_usec(f, "kexec-watchdog-overridden", m->watchdog_overridden[WATCHDOG_KEXEC]);
         (void) serialize_usec(f, "pretimeout-watchdog-overridden", m->watchdog_overridden[WATCHDOG_PRETIMEOUT]);
+        (void) serialize_item(f, "pretimeout-watchdog-governor-overridden", m->watchdog_pretimeout_governor_overridden);
 
         for (ManagerTimestamp q = 0; q < _MANAGER_TIMESTAMP_MAX; q++) {
                 _cleanup_free_ char *joined = NULL;
@@ -3653,6 +3657,16 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
                         else
                                 manager_override_watchdog(m, WATCHDOG_PRETIMEOUT, t);
 
+                } else if ((val = startswith(l, "pretimeout-watchdog-governor-overridden="))) {
+                        r = free_and_strdup(&m->watchdog_pretimeout_governor_overridden, val);
+                        if (r < 0)
+                                return r;
+
+                } else if ((val = startswith(l, "pretimeout-watchdog-governor-overridden="))) {
+                        r = free_and_strdup(&m->watchdog_pretimeout_governor_overridden, val);
+                        if (r < 0)
+                                return r;
+
                 } else if (startswith(l, "env=")) {
                         r = deserialize_environment(l + 4, &m->client_environment);
                         if (r < 0)
@@ -3731,6 +3745,52 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
         }
 
         return manager_deserialize_units(m, f, fds);
+}
+
+int manager_set_watchdog_pretimeout_governor(Manager *m, const char *governor) {
+        _cleanup_free_ char *p = NULL;
+        int r;
+
+        assert(m);
+
+        if (MANAGER_IS_USER(m))
+                return 0;
+
+        if (streq_ptr(m->watchdog_pretimeout_governor, governor))
+                return 0;
+
+        p = strdup(governor);
+        if (!p)
+                return -ENOMEM;
+
+        r = watchdog_setup_pretimeout_governor(governor);
+        if (r < 0)
+                return r;
+
+        return free_and_replace(m->watchdog_pretimeout_governor, p);
+}
+
+int manager_override_watchdog_pretimeout_governor(Manager *m, const char *governor) {
+        _cleanup_free_ char *p = NULL;
+        int r;
+
+        assert(m);
+
+        if (MANAGER_IS_USER(m))
+                return 0;
+
+        if (streq_ptr(m->watchdog_pretimeout_governor_overridden, governor))
+                return 0;
+
+        p = strdup(governor);
+        if (!p)
+                return -ENOMEM;
+
+        r = watchdog_setup_pretimeout_governor(governor);
+        if (r < 0)
+                return r;
+
+        return free_and_replace(m->watchdog_pretimeout_governor_overridden, p);
 }
 
 int manager_reload(Manager *m) {

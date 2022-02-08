@@ -28,6 +28,7 @@
 #NUMAMask=
 #RuntimeWatchdogSec=0
 #RuntimeWatchdogPreSec=0
+#RuntimeWatchdogPreGovernor=
 #RebootWatchdogSec=10min
 #ShutdownWatchdogSec=10min
 #KExecWatchdogSec=0
