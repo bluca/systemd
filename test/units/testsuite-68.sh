@@ -36,6 +36,15 @@ OnFailure=testservice-failure-exit-handler-68.service
 ExecStart=/bin/bash -c "exit 1"
 EOF
 
+cat >/run/systemd/system/testservice-failure-68-template.service <<EOF
+[Unit]
+Description=TEST-68-PROPAGATE-EXIT-STATUS with OnFailure= trigger (template)
+OnFailure=testservice-failure-exit-handler-68-template@%n.service
+
+[Service]
+ExecStart=/bin/bash -c "exit 1"
+EOF
+
 # Script to check that when an OnFailure= dependency fires, the correct
 # MONITOR* env variables are passed.
 cat >/tmp/check_on_failure.sh <<EOF
@@ -63,7 +72,7 @@ if [ -z "\$MONITOR_INVOCATION_ID" ]; then
     exit 1;
 fi
 
-if [[ "\$MONITOR_UNIT" != "testservice-failure-68.service" && "\$MONITOR_UNIT" != "testservice-transient-failure-68.service" ]]; then
+if [[ "\$MONITOR_UNIT" != "testservice-failure-68.service" && "\$MONITOR_UNIT" != "testservice-failure-68-template.service" && "\$MONITOR_UNIT" != "testservice-transient-failure-68.service" ]]; then
     echo "MONITOR_UNIT was \"\$MONITOR_UNIT\", expected \"testservice-failure-68{-transient}.service\"";
     exit 1;
 fi
@@ -83,6 +92,17 @@ ExecStartPre=/tmp/check_on_failure.sh
 ExecStart=/tmp/check_on_failure.sh
 EOF
 
+# Template version.
+cat >/run/systemd/system/testservice-failure-exit-handler-68-template@.service <<EOF
+[Unit]
+Description=TEST-68-PROPAGATE-EXIT-STATUS handle service exiting in failure (template)
+
+[Service]
+ExecStartPre=echo "triggered by %i"
+ExecStartPre=/tmp/check_on_failure.sh
+ExecStart=/tmp/check_on_failure.sh
+EOF
+
 systemctl daemon-reload
 
 systemctl start testservice-failure-68.service
@@ -91,6 +111,10 @@ wait_on_state_or_fail "testservice-failure-exit-handler-68.service" "inactive" "
 # Test some transient units since these exit very quickly.
 systemd-run --unit=testservice-transient-failure-68 --property=OnFailure=testservice-failure-exit-handler-68.service /bin/bash -c "exit 1;"
 wait_on_state_or_fail "testservice-failure-exit-handler-68.service" "inactive" "10"
+
+# Test template handlers too
+systemctl start testservice-failure-68-template.service
+wait_on_state_or_fail "testservice-failure-exit-handler-68-template@testservice-failure-68-template.service.service" "inactive" "10"
 
 systemd-analyze log-level info
 echo OK >/testok
