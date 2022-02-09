@@ -1431,91 +1431,19 @@ static bool service_exec_needs_notify_socket(Service *s, ExecFlags flags) {
         return s->notify_access != NOTIFY_NONE;
 }
 
-static int service_create_monitor_md_env(Job *j, char **ret) {
-        _cleanup_free_ char *var = NULL;
-        const char *list_delim = ";";
-        bool first = true;
+static Service *service_get_triggering_service(Job *j) {
         Unit *tu;
 
         assert(j);
-        assert(ret);
 
-        /* Create an environment variable 'MONITOR_METADATA', if creation is successful
-         * a pointer to it is returned via ret.
-         *
-         * This variable contains a space separated set of fields which relate to
-         * the service(s) which triggered job 'j'. Job 'j' is the JOB_START job for
-         * an OnFailure= or OnSuccess= dependency. Format of the MONITOR_METADATA
-         * variable is as follows:
-         *
-         * MONITOR_METADATA="SERVICE_RESULT=<result-string0>,EXIT_CODE=<exit-code0>,EXIT_STATUS=<exit-status0>,
-         *                   INVOCATION_ID=<id>,UNIT=<triggering-unit0.service>;
-         *                   SERVICE_RESULT=<result-stringN>,EXIT_CODE=<exit-codeN>,EXIT_STATUS=<exit-statusN>,
-         *                   INVOCATION_ID=<id>,UNIT=<triggering-unitN.service>"
-         *
-         * Multiple results may be passed as in the above example if jobs are merged, i.e.
-         * some services a and b contain an OnFailure= or OnSuccess= dependency on the same
-         * service.
-         *
-         * For example:
-         *
-         * MONITOR_METADATA="SERVICE_RESULT=exit-code,EXIT_CODE=exited,EXIT_STATUS=1,INVOCATION_ID=02dd868af2f344b18edaf74b618b2f90,UNIT=failer.service;
-         *                   SERVICE_RESULT=exit-code,EXIT_CODE=exited,EXIT_STATUS=1,INVOCATION_ID=80cb228bd7344f77a090eda603a3cfe2,UNIT=failer2.service"
-         */
+        /* Return the service which triggered service 's', which is stored in
+         * the job's triggered_by list. */
 
-        LIST_FOREACH(triggered_by, tu, j->triggered_by) {
-                Service *env_source = SERVICE(tu);
-                int r;
+        LIST_FOREACH(triggered_by, tu, j->triggered_by)
+                if (SERVICE(tu))
+                        return SERVICE(tu);
 
-                if (!env_source)
-                        continue;
-
-                if (first) {
-                        /* Add the environment variable name first. */
-                        r = strextendf(&var, "MONITOR_METADATA=");
-                        if (r < 0)
-                                return r;
-
-                }
-
-                r = strextendf(&var, "%sSERVICE_RESULT=%s",
-                               !first ? list_delim : "", service_result_to_string(env_source->result));
-                if (r < 0)
-                        return r;
-
-                first = false;
-
-                if (env_source->main_exec_status.pid > 0 &&
-                    dual_timestamp_is_set(&env_source->main_exec_status.exit_timestamp)) {
-                        r = strextendf(&var, ",EXIT_CODE=%s",
-                                       sigchld_code_to_string(env_source->main_exec_status.code));
-                        if (r < 0)
-                                return r;
-
-                        if (env_source->main_exec_status.code == CLD_EXITED)
-                                r = strextendf(&var, ",EXIT_STATUS=%i",
-                                               env_source->main_exec_status.status);
-                        else
-                                r = strextendf(&var, ",EXIT_STATUS=%s",
-                                               signal_to_string(env_source->main_exec_status.status));
-                        if (r < 0)
-                                return r;
-                }
-
-                if (!sd_id128_is_null(UNIT(env_source)->invocation_id)) {
-                        r = strextendf(&var, ",INVOCATION_ID=" SD_ID128_FORMAT_STR,
-                                       SD_ID128_FORMAT_VAL(UNIT(env_source)->invocation_id));
-                        if (r < 0)
-                                return r;
-                }
-
-                r = strextendf(&var, ",UNIT=%s", UNIT(env_source)->id);
-                if (r < 0)
-                        return r;
-        }
-
-        *ret = TAKE_PTR(var);
-        return 0;
+        return NULL;
 }
 
 static int service_spawn(
@@ -1582,7 +1510,7 @@ static int service_spawn(
         if (r < 0)
                 return r;
 
-        our_env = new0(char*, 10);
+        our_env = new0(char*, 12);
         if (!our_env)
                 return -ENOMEM;
 
@@ -1636,30 +1564,44 @@ static int service_spawn(
                 }
         }
 
+        Service *env_source = NULL;
+        const char *monitor_prefix;
         if (flags & EXEC_SETENV_RESULT) {
-                if (asprintf(our_env + n_env++, "SERVICE_RESULT=%s", service_result_to_string(s->result)) < 0)
+                env_source = s;
+                monitor_prefix = "";
+        } else if (flags & EXEC_SETENV_MONITOR_RESULT && UNIT(s)->job) {
+                env_source = service_get_triggering_service(UNIT(s)->job);
+                monitor_prefix = "MONITOR_";
+        }
+
+        if (env_source) {
+                if (asprintf(our_env + n_env++, "%sSERVICE_RESULT=%s", monitor_prefix, service_result_to_string(env_source->result)) < 0)
                         return -ENOMEM;
 
-                if (s->main_exec_status.pid > 0 &&
-                    dual_timestamp_is_set(&s->main_exec_status.exit_timestamp)) {
-                        if (asprintf(our_env + n_env++, "EXIT_CODE=%s", sigchld_code_to_string(s->main_exec_status.code)) < 0)
+                if (env_source->main_exec_status.pid > 0 &&
+                    dual_timestamp_is_set(&env_source->main_exec_status.exit_timestamp)) {
+                        if (asprintf(our_env + n_env++, "%sEXIT_CODE=%s", monitor_prefix, sigchld_code_to_string(env_source->main_exec_status.code)) < 0)
                                 return -ENOMEM;
 
-                        if (s->main_exec_status.code == CLD_EXITED)
-                                r = asprintf(our_env + n_env++, "EXIT_STATUS=%i", s->main_exec_status.status);
+                        if (env_source->main_exec_status.code == CLD_EXITED)
+                                r = asprintf(our_env + n_env++, "%sEXIT_STATUS=%i", monitor_prefix, env_source->main_exec_status.status);
                         else
-                                r = asprintf(our_env + n_env++, "EXIT_STATUS=%s", signal_to_string(s->main_exec_status.status));
+                                r = asprintf(our_env + n_env++, "%sEXIT_STATUS=%s", monitor_prefix, signal_to_string(env_source->main_exec_status.status));
 
                         if (r < 0)
                                 return -ENOMEM;
                 }
 
-        } else if (flags & EXEC_SETENV_MONITOR_RESULT) {
-                Job *j = UNIT(s)->job;
-                if (j) {
-                        r = service_create_monitor_md_env(j, our_env + n_env++);
-                        if (r < 0)
-                                return r;
+                if (env_source != s) {
+                        if (!sd_id128_is_null(UNIT(env_source)->invocation_id)) {
+                                r = asprintf(our_env + n_env++, "%sINVOCATION_ID=" SD_ID128_FORMAT_STR,
+                                             monitor_prefix, SD_ID128_FORMAT_VAL(UNIT(env_source)->invocation_id));
+                                if (r < 0)
+                                        return -ENOMEM;
+                        }
+
+                        if (asprintf(our_env + n_env++, "%sUNIT=%s", monitor_prefix, UNIT(env_source)->id) < 0)
+                                return -ENOMEM;
                 }
         }
 
