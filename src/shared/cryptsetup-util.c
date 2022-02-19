@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+#include <linux/blkpg.h>
+#include <linux/fs.h>
 #include <linux/sed-opal.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -371,6 +373,7 @@ int opal_lock_unlock(
                         },
                 },
         };
+        uint64_t device_size, metadata_size, keyslots_size, offset, length;
         _cleanup_(erase_and_freep) char *volume_key = NULL;
         _cleanup_close_ int crypt_fd = -1;
         const char *device_name;
@@ -415,6 +418,15 @@ int opal_lock_unlock(
                 fd = crypt_fd;
         }
 
+        if (ioctl(fd, BLKGETSIZE64, &device_size) != 0)
+                return log_debug_errno(errno, "Failed to get block device size of %s: %m", device_name);
+
+        r = sym_crypt_get_metadata_size(cd, &metadata_size, &keyslots_size);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to get LUKS2 metadata size: %m");
+        length = device_size - metadata_size - keyslots_size;
+        offset = sym_crypt_get_data_offset(cd);
+
         r = ioctl(fd, IOC_OPAL_LOCK_UNLOCK, &unlock);
         if (r < 0)
                 return log_debug_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "OPAL not supported on this kernel version, refusing.");
@@ -431,6 +443,25 @@ int opal_lock_unlock(
         r = ioctl(fd, IOC_OPAL_SAVE, &unlock);
         if (r != OPAL_STATUS_SUCCESS) /* This will be propagated, log the useful string immediately. */
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to prepare OPAL device '%s' for sleep resume: %s", device_name, opal_status_to_string(r));
+
+        struct blkpg_partition part = {
+                .start = offset,
+                .length = length,
+                .pno = 1 + opal_segment,
+        };
+        struct blkpg_ioctl_arg arg = {
+                .op = lock ? BLKPG_DEL_PARTITION : BLKPG_ADD_PARTITION,
+                .data = &part,
+                .datalen = sizeof(part),
+        };
+
+        _cleanup_close_ int new_fd = open("/dev/sdd", O_RDWR);
+        if (new_fd < 0)
+                return log_debug_errno(errno, "Failed to open device '%s': %m", "/dev/sdd");
+
+        r = ioctl(new_fd, BLKPG, &arg);
+        if (r < 0)
+                return log_debug_errno(errno, "Failed to add partition to block device '%s': %m", "/dev/sdd");
 
         return 0;
 }

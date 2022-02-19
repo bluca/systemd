@@ -947,15 +947,15 @@ static int opal_activate_by_passphrase(
         /* Try to avoid leaving a device active but with a locked segment, so
          * unlock first when opening but lock last when closing. */
         if (attach) {
-                r = opal_lock_unlock(cd, /* fd */ -1, /* lock= */ !attach, /* pass_volume_key */ false, opal_segment, keyslot, volume_key, volume_key_size);
-                if (r < 0)
-                        return r;
+                return opal_lock_unlock(cd, /* fd */ -1, /* lock= */ !attach, /* pass_volume_key */ false, opal_segment, keyslot, volume_key, volume_key_size);
+                // if (r < 0)
+                //         return r;
 
-                return crypt_activate_by_passphrase(cd, name, keyslot, volume_key, volume_key_size, flags);
+                // return crypt_activate_by_passphrase(cd, name, keyslot, volume_key, volume_key_size, flags);
         } else {
-                r = crypt_deactivate(cd, name);
-                if (r < 0)
-                        return r;
+                // r = crypt_deactivate(cd, name);
+                // if (r < 0)
+                //         return r;
 
                 return opal_lock_unlock(cd, /* fd */ -1, /* lock= */ !attach, /* pass_volume_key */ false, opal_segment, keyslot, volume_key, volume_key_size);
         }
