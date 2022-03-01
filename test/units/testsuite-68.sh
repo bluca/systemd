@@ -33,7 +33,7 @@ Description=TEST-68-PROPAGATE-EXIT-STATUS with OnFailure= trigger
 OnFailure=testservice-failure-exit-handler-68.service
 
 [Service]
-ExecStart=/bin/bash -c "exit 1"
+ExecStart=sh -c "exit 1"
 EOF
 
 cat >/run/systemd/system/testservice-failure-68-template.service <<EOF
@@ -42,42 +42,45 @@ Description=TEST-68-PROPAGATE-EXIT-STATUS with OnFailure= trigger (template)
 OnFailure=testservice-failure-exit-handler-68-template@%n.service
 
 [Service]
-ExecStart=/bin/bash -c "exit 1"
+ExecStart=sh -c "exit 1"
 EOF
 
 # Script to check that when an OnFailure= dependency fires, the correct
 # MONITOR* env variables are passed.
-cat >/tmp/check_on_failure.sh <<EOF
-#!/usr/bin/env bash
+cat >/tmp/check_on_failure.sh <<"EOF"
+#!/bin/sh
 
 set -ex
 env
-if [ "\$MONITOR_SERVICE_RESULT" != "exit-code" ]; then
-    echo "MONITOR_SERVICE_RESULT was \"\$MONITOR_SERVICE_RESULT\", expected \"exit-code\"";
-    exit 1;
+if [ "$MONITOR_SERVICE_RESULT" != "exit-code" ]; then
+    echo "MONITOR_SERVICE_RESULT was '$MONITOR_SERVICE_RESULT', expected 'exit-code'"
+    exit 1
 fi
 
-if [ "\$MONITOR_EXIT_CODE" != "exited" ]; then
-    echo "MONITOR_EXIT_CODE was \"\$MONITOR_EXIT_CODE\", expected \"exited\"";
-    exit 1;
+if [ "$MONITOR_EXIT_CODE" != "exited" ]; then
+    echo "MONITOR_EXIT_CODE was '$MONITOR_EXIT_CODE', expected 'exited'"
+    exit 1
 fi
 
-if [ "\$MONITOR_EXIT_STATUS" != "1" ]; then
-    echo "MONITOR_EXIT_STATUS was \"\$MONITOR_EXIT_STATUS\", expected \"1\"";
-    exit 1;
+if [ "$MONITOR_EXIT_STATUS" != "1" ]; then
+    echo "MONITOR_EXIT_STATUS was '$MONITOR_EXIT_STATUS', expected '1'"
+    exit 1
 fi
 
-if [ -z "\$MONITOR_INVOCATION_ID" ]; then
-    echo "MONITOR_INVOCATION_ID unset";
-    exit 1;
+if [ -z "$MONITOR_INVOCATION_ID" ]; then
+    echo "MONITOR_INVOCATION_ID unset"
+    exit 1
 fi
 
-if [[ "\$MONITOR_UNIT" != "testservice-failure-68.service" && "\$MONITOR_UNIT" != "testservice-failure-68-template.service" && "\$MONITOR_UNIT" != "testservice-transient-failure-68.service" ]]; then
-    echo "MONITOR_UNIT was \"\$MONITOR_UNIT\", expected \"testservice-failure-68{-transient}.service\"";
-    exit 1;
+if [ "$MONITOR_UNIT" != "testservice-failure-68.service" ] &&
+   [ "$MONITOR_UNIT" != "testservice-failure-68-template.service" ] &&
+   [ "$MONITOR_UNIT" != "testservice-transient-failure-68.service" ]; then
+
+    echo "MONITOR_UNIT was '$MONITOR_UNIT', expected 'testservice[-transient]-failure-68[-template].service'"
+    exit 1
 fi
 
-exit 0;
+exit 0
 EOF
 chmod +x /tmp/check_on_failure.sh
 
@@ -109,7 +112,7 @@ systemctl start testservice-failure-68.service
 wait_on_state_or_fail "testservice-failure-exit-handler-68.service" "inactive" "10"
 
 # Test some transient units since these exit very quickly.
-systemd-run --unit=testservice-transient-failure-68 --property=OnFailure=testservice-failure-exit-handler-68.service /bin/bash -c "exit 1;"
+systemd-run --unit=testservice-transient-failure-68 --property=OnFailure=testservice-failure-exit-handler-68.service sh -c "exit 1"
 wait_on_state_or_fail "testservice-failure-exit-handler-68.service" "inactive" "10"
 
 # Test template handlers too
