@@ -1,3 +1,26 @@
+activate_by_token_tpm2
+-> deactivate_by_token
+cryptsetup: add option to keep keyring volume key for hyomed resize and close
+
+check dm-verity if signature stays attached
+start with libcryptsetup then move to linux
+
+maybe once we have status ioctl encrypt with 00000 first range to stop dd from paving over
+
+allocation algo for segment id: use gpt partition number, same for mbr (assigned by kernel)
+don't ask user for seg number, always derive it, but store it in json so that things can be rearranged
+
+one segment per luks header
+subsystem label as 'opal'
+double check that opal is really there and not send plaintext to dm-linear
+
+AI: add opal stuff to prototype
+format/open
+define what close should do
+destroy with psid
+use ioctl status
+
+
 Bugfixes:
 
 * Many manager configuration settings that are only applicable to user

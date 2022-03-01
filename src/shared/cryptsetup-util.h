@@ -81,10 +81,10 @@ int cryptsetup_set_minimal_pbkdf(struct crypt_device *cd);
 int cryptsetup_get_token_as_json(struct crypt_device *cd, int idx, const char *verify_type, JsonVariant **ret);
 int cryptsetup_add_token_json(struct crypt_device *cd, JsonVariant *v);
 
-int opal_lock_unlock(struct crypt_device *cd, int fd, bool lock, bool pass_volume_key, int opal_segment, int keyslot, const char *passphrase, size_t passphrase_length);
+int opal_lock_unlock(struct crypt_device *cd, int fd, const char *mapper_name, bool lock, bool pass_volume_key, int opal_segment, int keyslot, const char *passphrase, size_t passphrase_length);
 int opal_psid_wipe(const char *psid, const char *device);
 int opal_setup_range(struct crypt_device *cd, int fd, uint64_t device_size, int opal_segment, const void *volume_key, size_t volume_key_size);
-int cryptsetup_make_linear(struct crypt_device *cd);
+int cryptsetup_make_linear(struct crypt_device *cd, int segment);
 
 #else
 

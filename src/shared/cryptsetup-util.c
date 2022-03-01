@@ -351,6 +351,7 @@ DEFINE_STRING_TABLE_LOOKUP_TO_STRING(opal_status, OpalStatus);
 int opal_lock_unlock(
                 struct crypt_device *cd,
                 int fd,
+                const char *mapper_name,
                 bool lock,
                 bool pass_volume_key,
                 int opal_segment,
@@ -362,6 +363,7 @@ int opal_lock_unlock(
                 return 0; /* Nothing to do. */
 
         assert(cd);
+        assert(mapper_name);
         assert(passphrase || passphrase_length == 0);
 
         struct opal_lock_unlock unlock = {
@@ -435,33 +437,57 @@ int opal_lock_unlock(
         if (r != OPAL_STATUS_SUCCESS) /* This will be propagated, log the useful string immediately. */
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to %slock OPAL device '%s': %s", lock ? "" : "un", device_name, opal_status_to_string(r));
 
-        if (lock)
-                return 0;
+        if (!lock) {
+                /* If we are unlocking, also tell the kernel to automatically unlock when resuming
+                * from suspend, otherwise the drive will be locked and everything will go up in flames */
+                r = ioctl(fd, IOC_OPAL_SAVE, &unlock);
+                if (r != OPAL_STATUS_SUCCESS) /* This will be propagated, log the useful string immediately. */
+                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to prepare OPAL device '%s' for sleep resume: %s", device_name, opal_status_to_string(r));
+return 0;
+                unsigned block_size;
+                if (ioctl(fd, BLKSSZGET, &block_size) < 0)
+                        log_warning_errno(errno, "Couldn't determine sector size: %m");
 
-        /* If we are unlocking, also tell the kernel to automatically unlock when resuming
-         * from suspend, otherwise the drive will be locked and everything will go up in flames */
-        r = ioctl(fd, IOC_OPAL_SAVE, &unlock);
-        if (r != OPAL_STATUS_SUCCESS) /* This will be propagated, log the useful string immediately. */
-                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to prepare OPAL device '%s' for sleep resume: %s", device_name, opal_status_to_string(r));
+                _cleanup_free_ char *cmd = NULL;
+                if (asprintf(&cmd, "echo 0 %" PRIu64 " linear %s %" PRIu64 " | dmsetup create %s", length / block_size, device_name, offset / block_size, mapper_name) < 0)
+                        return log_oom();
+log_error("DBG %s", cmd);
+                r = system(cmd);
+                if (r != 0)
+                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to execute '%s'", cmd);
+        } else {
+return 0;
+                _cleanup_free_ char *cmd = NULL;
+                if (asprintf(&cmd, "dmsetup remove --force %s", mapper_name) < 0)
+                        return log_oom();
 
-        struct blkpg_partition part = {
-                .start = offset,
-                .length = length,
-                .pno = 1 + opal_segment,
-        };
-        struct blkpg_ioctl_arg arg = {
-                .op = lock ? BLKPG_DEL_PARTITION : BLKPG_ADD_PARTITION,
-                .data = &part,
-                .datalen = sizeof(part),
-        };
+                r = system(cmd);
+                if (r != 0)
+                        return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to execute '%s'", cmd);
+        }
 
-        _cleanup_close_ int new_fd = open("/dev/sdd", O_RDWR);
-        if (new_fd < 0)
-                return log_debug_errno(errno, "Failed to open device '%s': %m", "/dev/sdd");
+        // r = sym_crypt_load(cd, CRYPT_LUKS2, NULL);
+        // if (r < 0)
+        //         return log_error_errno(r, "Failed to load LUKS2 superblock: %m");
 
-        r = ioctl(new_fd, BLKPG, &arg);
-        if (r < 0)
-                return log_debug_errno(errno, "Failed to add partition to block device '%s': %m", "/dev/sdd");
+        // struct blkpg_partition part = {
+        //         .start = offset,
+        //         .length = length,
+        //         .pno = 1 + opal_segment,
+        // };
+        // struct blkpg_ioctl_arg arg = {
+        //         .op = lock ? BLKPG_DEL_PARTITION : BLKPG_ADD_PARTITION,
+        //         .data = &part,
+        //         .datalen = sizeof(part),
+        // };
+
+        // _cleanup_close_ int new_fd = open("/dev/sdd", O_RDWR);
+        // if (new_fd < 0)
+        //         return log_debug_errno(errno, "Failed to open device '%s': %m", "/dev/sdd");
+
+        // r = ioctl(new_fd, BLKPG, &arg);
+        // if (r < 0)
+        //         return log_debug_errno(errno, "Failed to add partition to block device '%s': %m", "/dev/sdd");
 
         return 0;
 }
@@ -669,7 +695,7 @@ cleanup:
 }
 
 /* Overwrite the LUKS2 header on disk, changing the dm-crypt segment to dm-linear. */
-int cryptsetup_make_linear(struct crypt_device *cd) {
+int cryptsetup_make_linear(struct crypt_device *cd, int segment) {
         _cleanup_(json_variant_unrefp) JsonVariant *luks_meta = NULL;
         const char *device_name, *json;
         _cleanup_close_ int fd = -1;
@@ -726,6 +752,7 @@ int cryptsetup_make_linear(struct crypt_device *cd) {
                                                          JSON_BUILD_OBJECT(JSON_BUILD_PAIR(json_variant_string(segment_index),
                                                                                            JSON_BUILD_OBJECT(JSON_BUILD_PAIR("type", JSON_BUILD_STRING("linear")),
                                                                                                              JSON_BUILD_PAIR("offset", JSON_BUILD_STRING(json_variant_string(json_offset))),
+                                                                                                             JSON_BUILD_PAIR("segment_number", JSON_BUILD_INTEGER(segment)),
                                                                                                              JSON_BUILD_PAIR("size", JSON_BUILD_STRING(json_variant_string(json_size)))))))));
         if (r < 0)
                 return log_error_errno(r, "Failed to build JSON object: %m");

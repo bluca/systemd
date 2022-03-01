@@ -947,17 +947,17 @@ static int opal_activate_by_passphrase(
         /* Try to avoid leaving a device active but with a locked segment, so
          * unlock first when opening but lock last when closing. */
         if (attach) {
-                return opal_lock_unlock(cd, /* fd */ -1, /* lock= */ !attach, /* pass_volume_key */ false, opal_segment, keyslot, volume_key, volume_key_size);
-                // if (r < 0)
-                //         return r;
+                return opal_lock_unlock(cd, /* fd */ -1, name, /* lock= */ !attach, /* pass_volume_key */ false, opal_segment, keyslot, volume_key, volume_key_size);
+                if (r < 0)
+                        return r;
 
-                // return crypt_activate_by_passphrase(cd, name, keyslot, volume_key, volume_key_size, flags);
+                return crypt_activate_by_passphrase(cd, name, keyslot, volume_key, volume_key_size, flags);
         } else {
-                // r = crypt_deactivate(cd, name);
-                // if (r < 0)
-                //         return r;
+                r = crypt_deactivate(cd, name);
+                if (r < 0)
+                        return r;
 
-                return opal_lock_unlock(cd, /* fd */ -1, /* lock= */ !attach, /* pass_volume_key */ false, opal_segment, keyslot, volume_key, volume_key_size);
+                return opal_lock_unlock(cd, /* fd */ -1, name, /* lock= */ !attach, /* pass_volume_key */ false, opal_segment, keyslot, volume_key, volume_key_size);
         }
 }
 
@@ -1876,51 +1876,51 @@ static int attach_luks_or_plain_or_bitlk(
 }
 
 static int get_opal_segment(struct crypt_device *cd, int *ret_segment_number) {
-        // _cleanup_(json_variant_unrefp) JsonVariant *luks_meta = NULL;
-        // const char *luks_meta_raw;
+        _cleanup_(json_variant_unrefp) JsonVariant *luks_meta = NULL;
+        const char *luks_meta_raw;
         int r;
 
         assert(cd);
         assert(ret_segment_number);
 
-        const char *subsystem = crypt_get_subsystem(cd);
-        if (!subsystem)
-                return 0;
+        // const char *subsystem = crypt_get_subsystem(cd);
+        // if (!subsystem)
+        //         return 0;
 
-        char *e = startswith(subsystem, "opal-");
-        if (!e)
-                return 0;
+        // char *e = startswith(subsystem, "opal-");
+        // if (!e)
+        //         return 0;
 
-        r = safe_atoi(e, ret_segment_number);
+        // r = safe_atoi(e, ret_segment_number);
+        // if (r < 0)
+        //         return log_error_errno(r, "Failed to parse segment number from %s", subsystem);
+
+        r = crypt_dump_json(cd, &luks_meta_raw, 0);
         if (r < 0)
-                return log_error_errno(r, "Failed to parse segment number from %s", subsystem);
+                return log_error_errno(r, "crypt_dump_json() failed: %m");
 
-        // r = crypt_dump_json(cd, &luks_meta_raw, 0);
-        // if (r < 0)
-        //         return log_error_errno(r, "crypt_dump_json() failed: %m");
+        r = json_parse(luks_meta_raw, 0, &luks_meta, NULL, NULL);
+        if (r < 0)
+                return log_error_errno(r, "json_parse() failed: %m");
 
-        // r = json_parse(luks_meta_raw, 0, &luks_meta, NULL, NULL);
-        // if (r < 0)
-        //         return log_error_errno(r, "json_parse() failed: %m");
+        JsonVariant *segments = json_variant_by_key(luks_meta, "segments");
+        if (segments) {
+                _unused_ const char *segment_id;
+                JsonVariant *segment_object;
 
-        // JsonVariant *segments = json_variant_by_key(luks_meta, "segments");
-        // if (segments) {
-        //         _unused_ const char *segment_id;
-        //         JsonVariant *segment_object;
+                JSON_VARIANT_OBJECT_FOREACH(segment_id, segment_object, segments) {
+                        JsonVariant *segment_type = json_variant_by_key(segment_object, "type");
+                        if (!segment_type || !json_variant_is_string(segment_type) || !streq(json_variant_string(segment_type), "linear"))
+                                continue;
 
-        //         JSON_VARIANT_OBJECT_FOREACH(segment_id, segment_object, segments) {
-        //                 JsonVariant *segment_type = json_variant_by_key(segment_object, "type");
-        //                 if (!segment_type || !json_variant_is_string(segment_type) || !streq(json_variant_string(segment_type), "opal"))
-        //                         continue;
+                        JsonVariant *segment_number = json_variant_by_key(segment_object, "segment_number");
+                        if (!segment_number || !json_variant_is_integer(segment_number))
+                                continue;
 
-        //                 JsonVariant *segment_number = json_variant_by_key(segment_object, "segment_number");
-        //                 if (!segment_number || !json_variant_is_integer(segment_number))
-        //                         continue;
-
-        //                 *ret_segment_number = json_variant_unsigned(segment_number);
-        //                 return 0; /* We don't support multiple segments per LUKS volume for now */
-        //         }
-        // }
+                        *ret_segment_number = json_variant_unsigned(segment_number);
+                        return 0; /* We don't support multiple segments per LUKS volume for now */
+                }
+        }
 
         return 0;
 }

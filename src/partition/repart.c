@@ -3107,7 +3107,7 @@ static int partition_encrypt(
         }
 
         if (is_opal) {
-                r = cryptsetup_make_linear(cd);
+                r = cryptsetup_make_linear(cd, opal_segment);
                 if (r < 0)
                         return log_error_errno(r, "Failed to update LUKS2 headers for OPAL: %m");
 
@@ -3115,19 +3115,19 @@ static int partition_encrypt(
                 if (r < 0)
                         return log_error_errno(r, "Failed to setup OPAL range: %m");
 
-                r = opal_lock_unlock(cd, device_fd, /* lock= */ false, /* pass_volume_key */ true, opal_segment, CRYPT_ANY_SLOT, volume_key, volume_key_size);
+                r = opal_lock_unlock(cd, device_fd, dm_name, /* lock= */ false, /* pass_volume_key */ true, opal_segment, CRYPT_ANY_SLOT, volume_key, volume_key_size);
                 if (r < 0)
                         return log_error_errno(r, "Failed to unlock OPAL segment: %m");
-        }
-
-        r = sym_crypt_activate_by_volume_key(
-                        cd,
-                        dm_name,
-                        volume_key,
-                        volume_key_size,
-                        arg_discard ? CRYPT_ACTIVATE_ALLOW_DISCARDS : 0);
-        if (r < 0)
-                return log_error_errno(r, "Failed to activate LUKS superblock: %m");
+        } //else {
+                r = sym_crypt_activate_by_volume_key(
+                                cd,
+                                dm_name,
+                                volume_key,
+                                volume_key_size,
+                                arg_discard ? CRYPT_ACTIVATE_ALLOW_DISCARDS : 0);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to activate LUKS superblock: %m");
+        //}
 
         log_info("Successfully encrypted future partition %" PRIu64 ".", p->partno);
 
@@ -3577,6 +3577,14 @@ static int context_mkfs(Context *context) {
                         r = deactivate_luks(cd, encrypted);
                         if (r < 0)
                                 return r;
+
+                        // _cleanup_free_ char *cmd = NULL;
+                        // if (asprintf(&cmd, "dmsetup remove --force %s", fsdev) < 0)
+                        //         return log_oom();
+
+                        // r = system(cmd);
+                        // if (r != 0)
+                        //         return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to execute '%s'", cmd);
 
                         sym_crypt_free(cd);
                         cd = NULL;
