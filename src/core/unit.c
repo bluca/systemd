@@ -367,6 +367,22 @@ int unit_set_description(Unit *u, const char *description) {
         return 0;
 }
 
+static bool unit_success_failure_handler_has_jobs(Unit *unit) {
+        Unit *other;
+        void *v;
+
+        assert(unit);
+
+        if (hashmap_size(unit->dependencies[UNIT_ON_FAILURE]) <= 0)
+                return false;
+
+        HASHMAP_FOREACH_KEY(v, other, unit->dependencies[UNIT_ON_FAILURE])
+                if (other->job || other->nop_job)
+                        return true;
+
+        return false;
+}
+
 bool unit_may_gc(Unit *u) {
         UnitActiveState state;
         int r;
@@ -381,10 +397,7 @@ bool unit_may_gc(Unit *u) {
          * in unit_gc_sweep(), but using markers to properly collect dependency loops.
          */
 
-        if (u->job)
-                return false;
-
-        if (u->nop_job)
+        if (u->job || u->nop_job)
                 return false;
 
         state = unit_active_state(u);
@@ -418,6 +431,10 @@ bool unit_may_gc(Unit *u) {
         default:
                 assert_not_reached("Unknown garbage collection mode");
         }
+
+        /* Check if any OnFailure= or on Success= jobs may be pending */
+        if (unit_success_failure_handler_has_jobs(u))
+                return false;
 
         if (u->cgroup_path) {
                 /* If the unit has a cgroup, then check whether there's anything in it. If so, we should stay
