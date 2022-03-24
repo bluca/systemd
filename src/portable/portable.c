@@ -1428,6 +1428,7 @@ int portable_detach(
 
         _cleanup_(lookup_paths_free) LookupPaths paths = {};
         _cleanup_set_free_ Set *unit_files = NULL, *markers = NULL;
+        _cleanup_free_ char *extensions = NULL;
         _cleanup_closedir_ DIR *d = NULL;
         const char *where, *item;
         struct dirent *de;
@@ -1585,8 +1586,17 @@ int portable_detach(
         return ret;
 
 not_found:
-        log_debug("No unit files associated with '%s' found. Image not attached?", name_or_path);
-        return sd_bus_error_setf(error, BUS_ERROR_NO_SUCH_UNIT, "No unit files associated with '%s' found. Image not attached?", name_or_path);
+        extensions = strv_join(extension_image_paths, ", ");
+        if (!extensions)
+                return -ENOMEM;
+
+        r = sd_bus_error_setf(error,
+                              BUS_ERROR_NO_SUCH_UNIT,
+                              "No unit files associated with '%s%s%s' found attached to the system. Image not attached?",
+                              name_or_path,
+                              isempty(extensions) ? "" : "' or any of its extensions '",
+                              isempty(extensions) ? "" : extensions);
+        return log_debug_errno(r, "%s", error->message);
 }
 
 static int portable_get_state_internal(
