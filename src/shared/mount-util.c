@@ -822,6 +822,11 @@ static int mount_in_namespace(
         /* One day, when bind mounting /proc/self/fd/n works across namespace boundaries we should rework
          * this logic to make use of it... */
 
+        r = safe_fork("(sd-user-bindmnt)", FORK_DEATHSIG|FORK_LOG|FORK_WAIT|FORK_NEW_MOUNTNS|FORK_NEW_USERNS, NULL);
+        if (r < 0)
+                return log_debug_errno(errno, "Failed to fork into new playground process: %m");
+        if (r == 0) {
+
         p = strjoina(propagate_path, "/");
         r = laccess(p, F_OK);
         if (r < 0)
@@ -1001,6 +1006,8 @@ finish:
                 (void) umount_verbose(LOG_DEBUG, mount_slave, UMOUNT_NOFOLLOW);
         if (mount_slave_created)
                 (void) rmdir(mount_slave);
+
+        }
 
         return r;
 }

@@ -3541,11 +3541,22 @@ static int apply_mount_namespace(
                         r = -ENOMEM;
                         goto finalize;
                 }
-        } else
+        } else {
+                if (asprintf(&propagate_dir, "/run/user/" UID_FMT "/systemd/propagate/%s", geteuid(), u->id) < 0) {
+                        r = -ENOMEM;
+                        goto finalize;
+                }
+
+                if (asprintf(&incoming_dir, "/run/user/" UID_FMT "/systemd/incoming", geteuid()) < 0) {
+                        r = -ENOMEM;
+                        goto finalize;
+                }
+
                 if (asprintf(&extension_dir, "/run/user/" UID_FMT "/systemd/unit-extensions", geteuid()) < 0) {
                         r = -ENOMEM;
                         goto finalize;
                 }
+        }
 
         r = setup_namespace(root_dir, root_image, context->root_image_options,
                             &ns_info, context->read_write_paths,

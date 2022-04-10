@@ -15,6 +15,7 @@
 #include "exit-status.h"
 #include "fd-util.h"
 #include "fileio.h"
+#include "format-util.h"
 #include "locale-util.h"
 #include "mount-util.h"
 #include "parse-util.h"
@@ -97,8 +98,9 @@ static int property_get_exit_status_set(
 }
 
 static int bus_service_method_mount(sd_bus_message *message, void *userdata, sd_bus_error *error, bool is_image) {
+        _cleanup_free_ char *propagate_directory = NULL, *incoming_directory = NULL;
         _cleanup_(mount_options_free_allp) MountOptions *options = NULL;
-        const char *dest, *src, *propagate_directory;
+        const char *dest, *src;
         int read_only, make_file_or_directory;
         Unit *u = userdata;
         ExecContext *c;
@@ -108,8 +110,8 @@ static int bus_service_method_mount(sd_bus_message *message, void *userdata, sd_
         assert(message);
         assert(u);
 
-        if (!MANAGER_IS_SYSTEM(u->manager))
-                return sd_bus_error_set(error, SD_BUS_ERROR_NOT_SUPPORTED, "Adding bind mounts at runtime is only supported for system managers.");
+        if (is_image && !MANAGER_IS_SYSTEM(u->manager))
+                return sd_bus_error_set(error, SD_BUS_ERROR_NOT_SUPPORTED, "Adding image mounts at runtime is only supported for system managers.");
 
         r = mac_selinux_unit_access_check(u, message, "start", error);
         if (r < 0)
@@ -165,16 +167,29 @@ static int bus_service_method_mount(sd_bus_message *message, void *userdata, sd_
         if (unit_pid == 0 || !UNIT_IS_ACTIVE_OR_RELOADING(unit_active_state(u)))
                 return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "Unit is not running");
 
-        propagate_directory = strjoina("/run/systemd/propagate/", u->id);
+        if (MANAGER_IS_SYSTEM(u->manager)) {
+                propagate_directory = strjoin("/run/systemd/propagate/", u->id);
+                if (!propagate_directory)
+                        return -ENOMEM;
+                incoming_directory = strdup("/run/systemd/incoming/");
+                if (!incoming_directory)
+                        return -ENOMEM;
+        } else {
+                if (asprintf(&propagate_directory, "/run/user/" UID_FMT "/systemd/propagate/%s", geteuid(), u->id) < 0)
+                        return -ENOMEM;
+                if (asprintf(&incoming_directory, "/run/user/" UID_FMT "/systemd/incoming", geteuid()) < 0)
+                        return -ENOMEM;
+        }
+
         if (is_image)
                 r = mount_image_in_namespace(unit_pid,
                                              propagate_directory,
-                                             "/run/systemd/incoming/",
+                                             incoming_directory,
                                              src, dest, read_only, make_file_or_directory, options);
         else
                 r = bind_mount_in_namespace(unit_pid,
                                             propagate_directory,
-                                            "/run/systemd/incoming/",
+                                            incoming_directory,
                                             src, dest, read_only, make_file_or_directory);
         if (r < 0)
                 return sd_bus_error_set_errnof(error, r, "Failed to mount %s on %s in unit's namespace: %m", src, dest);

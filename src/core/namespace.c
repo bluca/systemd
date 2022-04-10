@@ -2381,7 +2381,7 @@ int setup_namespace(
 
         /* Create the source directory to allow runtime propagation of mounts */
         if (setup_propagate)
-                (void) mkdir_p(propagate_dir, 0600);
+                (void) mkdir_p(propagate_dir, 0700);
 
         if (n_extension_images > 0 || !strv_isempty(extension_directories))
                 /* ExtensionImages/Directories mountpoint directories will be created while parsing the
