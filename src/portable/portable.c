@@ -1579,12 +1579,16 @@ static bool marker_matches_images(const char *marker, const char *name_or_path, 
                                 return false;
 
                         underscore = strchr(b, '_');
-                        if (underscore)
-                                l = underscore - b;
-                        else { /* Either component could be versioned */
-                                underscore = strchr(a, '_');
+                        /* XXX: workaround for restart loop
+                         * drop it once legacy app model is removed */
+                        if (!startswith(*image_name_or_path, "/run/deploy/")) {
                                 if (underscore)
-                                        l = underscore - a;
+                                        l = underscore - b;
+                                else { /* Either component could be versioned */
+                                        underscore = strchr(a, '_');
+                                        if (underscore)
+                                                l = underscore - a;
+                                }
                         }
 
                         if (!strneq(a, b, l))
