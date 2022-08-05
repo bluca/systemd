@@ -80,7 +80,8 @@ int path_extract_image_name(const char *path, char **ret) {
         }
 
         /* Truncate the version/counting suffixes */
-        fn[strcspn(fn, "_+")] = 0;
+        if (!startswith(path, "/run/deploy/")) // XXX: workaround for restart loop, drop it once legacy app model is removed
+                fn[strcspn(fn, "_+")] = 0;
 
         if (!image_name_is_valid(fn))
                 return -EINVAL;
