@@ -63,6 +63,12 @@ PartitionDesignator partition_verity_of(PartitionDesignator p) {
         case PARTITION_USR_OTHER:
                 return PARTITION_USR_OTHER_VERITY;
 
+        case PARTITION_SYSEXT:
+                return PARTITION_SYSEXT_VERITY;
+
+        case PARTITION_PORTABLE:
+                return PARTITION_PORTABLE_VERITY;
+
         default:
                 return _PARTITION_DESIGNATOR_INVALID;
         }
@@ -88,6 +94,12 @@ PartitionDesignator partition_verity_sig_of(PartitionDesignator p) {
 
         case PARTITION_USR_OTHER:
                 return PARTITION_USR_OTHER_VERITY_SIG;
+
+        case PARTITION_SYSEXT:
+                return PARTITION_SYSEXT_VERITY_SIG;
+
+        case PARTITION_PORTABLE:
+                return PARTITION_PORTABLE_VERITY_SIG;
 
         default:
                 return _PARTITION_DESIGNATOR_INVALID;
@@ -150,6 +162,12 @@ static const char *const partition_designator_table[] = {
         [PARTITION_USR_VERITY_SIG]            = "usr-verity-sig",
         [PARTITION_USR_SECONDARY_VERITY_SIG]  = "usr-secondary-verity-sig",
         [PARTITION_USR_OTHER_VERITY_SIG]      = "usr-other-verity-sig",
+        [PARTITION_SYSEXT]                    = "sysext",
+        [PARTITION_SYSEXT_VERITY]             = "sysext-verity",
+        [PARTITION_SYSEXT_VERITY_SIG]         = "sysext-verity-sig",
+        [PARTITION_PORTABLE]                  = "portable",
+        [PARTITION_PORTABLE_VERITY]           = "portable-verity",
+        [PARTITION_PORTABLE_VERITY_SIG]       = "portable-verity-sig",
         [PARTITION_TMP]                       = "tmp",
         [PARTITION_VAR]                       = "var",
         [PARTITION_USER_HOME]                 = "user-home",
@@ -176,12 +194,18 @@ static const char *const partition_mountpoint_table[] = {
 DEFINE_PRIVATE_STRING_TABLE_LOOKUP_TO_STRING(partition_mountpoint, PartitionDesignator);
 
 #define _GPT_ARCH_SEXTET(arch, name)                                   \
-        { SD_GPT_ROOT_##arch,              "root-" name,               ARCHITECTURE_##arch, .designator = PARTITION_ROOT_OTHER            },  \
-        { SD_GPT_ROOT_##arch##_VERITY,     "root-" name "-verity",     ARCHITECTURE_##arch, .designator = PARTITION_ROOT_OTHER_VERITY     },  \
-        { SD_GPT_ROOT_##arch##_VERITY_SIG, "root-" name "-verity-sig", ARCHITECTURE_##arch, .designator = PARTITION_ROOT_OTHER_VERITY_SIG },  \
-        { SD_GPT_USR_##arch,               "usr-" name,                ARCHITECTURE_##arch, .designator = PARTITION_USR_OTHER             },  \
-        { SD_GPT_USR_##arch##_VERITY,      "usr-" name "-verity",      ARCHITECTURE_##arch, .designator = PARTITION_USR_OTHER_VERITY      },  \
-        { SD_GPT_USR_##arch##_VERITY_SIG,  "usr-" name "-verity-sig",  ARCHITECTURE_##arch, .designator = PARTITION_USR_OTHER_VERITY_SIG  }
+        { SD_GPT_ROOT_##arch,              "root-" name,                      ARCHITECTURE_##arch, .designator = PARTITION_ROOT_OTHER            },  \
+        { SD_GPT_ROOT_##arch##_VERITY,     "root-" name "-verity",            ARCHITECTURE_##arch, .designator = PARTITION_ROOT_OTHER_VERITY     },  \
+        { SD_GPT_ROOT_##arch##_VERITY_SIG, "root-" name "-verity-sig",        ARCHITECTURE_##arch, .designator = PARTITION_ROOT_OTHER_VERITY_SIG },  \
+        { SD_GPT_USR_##arch,               "usr-" name,                       ARCHITECTURE_##arch, .designator = PARTITION_USR_OTHER             },  \
+        { SD_GPT_USR_##arch##_VERITY,      "usr-" name "-verity",             ARCHITECTURE_##arch, .designator = PARTITION_USR_OTHER_VERITY      },  \
+        { SD_GPT_USR_##arch##_VERITY_SIG,  "usr-" name "-verity-sig",         ARCHITECTURE_##arch, .designator = PARTITION_USR_OTHER_VERITY_SIG  },  \
+        { SD_GPT_SYSEXT_##arch,            "sysext-" name,                    ARCHITECTURE_##arch, .designator = PARTITION_SYSEXT                 },  \
+        { SD_GPT_SYSEXT_##arch##_VERITY,   "sysext-" name "-verity",          ARCHITECTURE_##arch, .designator = PARTITION_SYSEXT_VERITY          },  \
+        { SD_GPT_SYSEXT_##arch##_VERITY_SIG,"sysext-" name "-verity-sig",     ARCHITECTURE_##arch, .designator = PARTITION_SYSEXT_VERITY_SIG   },  \
+        { SD_GPT_PORTABLE_##arch,          "portable-" name,                  ARCHITECTURE_##arch, .designator = PARTITION_PORTABLE               },  \
+        { SD_GPT_PORTABLE_##arch##_VERITY, "portable-" name "-verity",        ARCHITECTURE_##arch, .designator = PARTITION_PORTABLE_VERITY        },  \
+        { SD_GPT_PORTABLE_##arch##_VERITY_SIG,"portable-" name "-verity-sig", ARCHITECTURE_##arch, .designator = PARTITION_PORTABLE_VERITY_SIG}
 
 const GptPartitionType gpt_partition_type_table[] = {
         _GPT_ARCH_SEXTET(ALPHA,       "alpha"),
@@ -204,12 +228,18 @@ const GptPartitionType gpt_partition_type_table[] = {
         _GPT_ARCH_SEXTET(X86,         "x86"),
         _GPT_ARCH_SEXTET(X86_64,      "x86-64"),
 #ifdef SD_GPT_ROOT_NATIVE
-        { SD_GPT_ROOT_NATIVE,            "root",            native_architecture(), .designator = PARTITION_ROOT            },
-        { SD_GPT_ROOT_NATIVE_VERITY,     "root-verity",     native_architecture(), .designator = PARTITION_ROOT_VERITY     },
-        { SD_GPT_ROOT_NATIVE_VERITY_SIG, "root-verity-sig", native_architecture(), .designator = PARTITION_ROOT_VERITY_SIG },
-        { SD_GPT_USR_NATIVE,             "usr",             native_architecture(), .designator = PARTITION_USR             },
-        { SD_GPT_USR_NATIVE_VERITY,      "usr-verity",      native_architecture(), .designator = PARTITION_USR_VERITY      },
-        { SD_GPT_USR_NATIVE_VERITY_SIG,  "usr-verity-sig",  native_architecture(), .designator = PARTITION_USR_VERITY_SIG  },
+        { SD_GPT_ROOT_NATIVE,                "root",                native_architecture(), .designator = PARTITION_ROOT            },
+        { SD_GPT_ROOT_NATIVE_VERITY,         "root-verity",         native_architecture(), .designator = PARTITION_ROOT_VERITY     },
+        { SD_GPT_ROOT_NATIVE_VERITY_SIG,     "root-verity-sig",     native_architecture(), .designator = PARTITION_ROOT_VERITY_SIG },
+        { SD_GPT_USR_NATIVE,                 "usr",                 native_architecture(), .designator = PARTITION_USR             },
+        { SD_GPT_USR_NATIVE_VERITY,          "usr-verity",          native_architecture(), .designator = PARTITION_USR_VERITY      },
+        { SD_GPT_USR_NATIVE_VERITY_SIG,      "usr-verity-sig",      native_architecture(), .designator = PARTITION_USR_VERITY_SIG  },
+        { SD_GPT_SYSEXT_NATIVE,              "sysext",              native_architecture(), .designator = PARTITION_SYSEXT          },
+        { SD_GPT_SYSEXT_NATIVE_VERITY,       "sysext-verity",       native_architecture(), .designator = PARTITION_SYSEXT_VERITY   },
+        { SD_GPT_SYSEXT_NATIVE_VERITY_SIG,   "sysext-verity-sig",   native_architecture(), .designator = PARTITION_SYSEXT_VERITY_SIG},
+        { SD_GPT_PORTABLE_NATIVE,            "portable",            native_architecture(), .designator = PARTITION_PORTABLE        },
+        { SD_GPT_PORTABLE_NATIVE_VERITY,     "portable-verity",     native_architecture(), .designator = PARTITION_PORTABLE_VERITY },
+        { SD_GPT_PORTABLE_NATIVE_VERITY_SIG, "portable-verity-sig", native_architecture(), .designator = PARTITION_PORTABLE_VERITY_SIG},
 #endif
 #ifdef SD_GPT_ROOT_SECONDARY
         { SD_GPT_ROOT_NATIVE,            "root-secondary",            native_architecture(), .designator = PARTITION_ROOT_SECONDARY            },
@@ -299,7 +329,7 @@ int gpt_partition_label_valid(const char *s) {
         return char16_strlen(recoded) <= GPT_LABEL_MAX;
 }
 
-static GptPartitionType gpt_partition_type_from_uuid(sd_id128_t id) {
+GptPartitionType gpt_partition_type_from_uuid(sd_id128_t id) {
         const GptPartitionType *pt;
 
         pt = gpt_partition_type_find_by_uuid(id);
@@ -370,6 +400,10 @@ bool gpt_partition_type_knows_read_only(sd_id128_t id) {
                 gpt_partition_type_is_root_verity(id) ||
                 gpt_partition_type_is_usr_verity(id) ||
                 IN_SET(gpt_partition_type_from_uuid(id).designator,
+                       PARTITION_SYSEXT,
+                       PARTITION_SYSEXT_VERITY,
+                       PARTITION_PORTABLE,
+                       PARTITION_PORTABLE_VERITY,
                        PARTITION_HOME,
                        PARTITION_SRV,
                        PARTITION_VAR,

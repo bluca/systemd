@@ -73,6 +73,8 @@ typedef enum DissectImageFlags {
         DISSECT_IMAGE_BLOCK_DEVICE             = DISSECT_IMAGE_MANAGE_PARTITION_DEVICES |
                                                  DISSECT_IMAGE_OPEN_PARTITION_DEVICES,
         DISSECT_IMAGE_RELAX_SYSEXT_CHECK       = 1 << 22, /* Don't insist that the extension-release file name matches the image name */
+        DISSECT_IMAGE_SYSEXT                   = 1 << 23,
+        DISSECT_IMAGE_PORTABLE                 = 1 << 24,
 } DissectImageFlags;
 
 struct DissectedImage {

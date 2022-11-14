@@ -356,7 +356,7 @@ static int dissect_image(
         assert(m);
         assert(fd >= 0);
         assert(devname);
-        assert(!verity || verity->designator < 0 || IN_SET(verity->designator, PARTITION_ROOT, PARTITION_USR));
+        assert(!verity || verity->designator < 0 || IN_SET(verity->designator, PARTITION_ROOT, PARTITION_USR, PARTITION_SYSEXT, PARTITION_PORTABLE));
         assert(!verity || verity->root_hash || verity->root_hash_size == 0);
         assert(!verity || verity->root_hash_sig || verity->root_hash_sig_size == 0);
         assert(!verity || (verity->root_hash || !verity->root_hash_sig));
@@ -798,6 +798,46 @@ static int dissect_image(
                                 fstype = "verity_hash_signature";
                                 rw = false;
 
+                        } else if (gpt_partition_type_from_uuid(type_id).designator == PARTITION_SYSEXT) {
+
+                                check_partition_flags(node, pflags, SD_GPT_FLAG_READ_ONLY);
+
+                                assert_se((architecture = gpt_partition_type_uuid_to_arch(type_id)) >= 0);
+                                designator = PARTITION_SYSEXT;
+                                rw = !(pflags & SD_GPT_FLAG_READ_ONLY);
+
+                        } else if (gpt_partition_type_from_uuid(type_id).designator == PARTITION_SYSEXT_VERITY) {
+
+                                check_partition_flags(node, pflags, SD_GPT_FLAG_READ_ONLY);
+
+                                m->has_verity = true;
+
+                                if (!verity)
+                                        continue;
+                                if (verity->designator >= 0 && verity->designator != PARTITION_SYSEXT)
+                                        continue;
+
+                                assert_se((architecture = gpt_partition_type_uuid_to_arch(type_id)) >= 0);
+                                designator = PARTITION_SYSEXT_VERITY;
+                                fstype = "DM_verity_hash";
+                                rw = false;
+
+                        } else if (gpt_partition_type_from_uuid(type_id).designator == PARTITION_SYSEXT_VERITY_SIG) {
+
+                                check_partition_flags(node, pflags, SD_GPT_FLAG_READ_ONLY);
+
+                                m->has_verity_sig = true;
+
+                                if (!verity)
+                                        continue;
+                                if (verity->designator >= 0 && verity->designator != PARTITION_SYSEXT)
+                                        continue;
+
+                                assert_se((architecture = gpt_partition_type_uuid_to_arch(type_id)) >= 0);
+                                designator = PARTITION_SYSEXT_VERITY_SIG;
+                                fstype = "verity_hash_signature";
+                                rw = false;
+
                         } else if (sd_id128_equal(type_id, SD_GPT_SWAP)) {
 
                                 check_partition_flags(node, pflags, SD_GPT_FLAG_NO_AUTO);
@@ -1217,7 +1257,7 @@ static int dissect_image(
                         return -EADDRNOTAVAIL;
 
                 bool have_verity_sig_partition =
-                        m->partitions[verity->designator == PARTITION_USR ? PARTITION_USR_VERITY_SIG : PARTITION_ROOT_VERITY_SIG].found;
+                        m->partitions[verity->designator == PARTITION_USR ? PARTITION_USR_VERITY_SIG : verity->designator == PARTITION_SYSEXT ? PARTITION_SYSEXT_VERITY_SIG : verity->designator == PARTITION_PORTABLE ? PARTITION_PORTABLE_VERITY_SIG : PARTITION_ROOT_VERITY_SIG].found;
 
                 if (verity->root_hash) {
                         /* If we have an explicit root hash and found the partitions for it, then we are ready to use
@@ -1229,6 +1269,22 @@ static int dissect_image(
 
                                 /* If we found a verity setup, then the root partition is necessarily read-only. */
                                 m->partitions[PARTITION_ROOT].rw = false;
+                                m->verity_ready = true;
+
+                        } else if (verity->designator == PARTITION_SYSEXT) {
+                                if (!m->partitions[PARTITION_SYSEXT_VERITY].found || !m->partitions[PARTITION_SYSEXT].found)
+                                        return -EADDRNOTAVAIL;
+
+                                /* If we found a verity setup, then the root partition is necessarily read-only. */
+                                m->partitions[PARTITION_SYSEXT].rw = false;
+                                m->verity_ready = true;
+
+                        } else if (verity->designator == PARTITION_PORTABLE) {
+                                if (!m->partitions[PARTITION_PORTABLE_VERITY].found || !m->partitions[PARTITION_PORTABLE].found)
+                                        return -EADDRNOTAVAIL;
+
+                                /* If we found a verity setup, then the root partition is necessarily read-only. */
+                                m->partitions[PARTITION_PORTABLE].rw = false;
                                 m->verity_ready = true;
 
                         } else {
@@ -1606,7 +1662,9 @@ int dissected_image_mount(
          */
 
         if (!(m->partitions[PARTITION_ROOT].found ||
-              (m->partitions[PARTITION_USR].found && FLAGS_SET(flags, DISSECT_IMAGE_USR_NO_ROOT))))
+              (m->partitions[PARTITION_USR].found && FLAGS_SET(flags, DISSECT_IMAGE_USR_NO_ROOT)) ||
+              (m->partitions[PARTITION_SYSEXT].found && FLAGS_SET(flags, DISSECT_IMAGE_SYSEXT)) ||
+              (m->partitions[PARTITION_PORTABLE].found && FLAGS_SET(flags, DISSECT_IMAGE_PORTABLE))))
                 return -ENXIO; /* Require a root fs or at least a /usr/ fs (the latter is subject to a flag of its own) */
 
         if ((flags & DISSECT_IMAGE_MOUNT_NON_ROOT_ONLY) == 0) {
@@ -1621,6 +1679,14 @@ int dissected_image_mount(
 
                 /* For us mounting root always means mounting /usr as well */
                 r = mount_partition(m->partitions + PARTITION_USR, where, "/usr", uid_shift, uid_range, flags);
+                if (r < 0)
+                        return r;
+
+                r = mount_partition(m->partitions + PARTITION_SYSEXT, where, NULL, uid_shift, uid_range, flags);
+                if (r < 0)
+                        return r;
+
+                r = mount_partition(m->partitions + PARTITION_PORTABLE, where, NULL, uid_shift, uid_range, flags);
                 if (r < 0)
                         return r;
 
@@ -2514,7 +2580,7 @@ int verity_settings_load(
 
         assert(verity);
         assert(image);
-        assert(verity->designator < 0 || IN_SET(verity->designator, PARTITION_ROOT, PARTITION_USR));
+        assert(verity->designator < 0 || IN_SET(verity->designator, PARTITION_ROOT, PARTITION_USR, PARTITION_SYSEXT, PARTITION_PORTABLE));
 
         /* If we are asked to load the root hash for a device node, exit early */
         if (is_device_path(image))
@@ -3311,6 +3377,8 @@ static bool mount_options_relax_extension_release_checks(const MountOptions *opt
 
         return string_contains_word(mount_options_from_designator(options, PARTITION_ROOT), ",", "x-systemd.relax-extension-release-check") ||
                         string_contains_word(mount_options_from_designator(options, PARTITION_USR), ",", "x-systemd.relax-extension-release-check") ||
+                        string_contains_word(mount_options_from_designator(options, PARTITION_SYSEXT), ",", "x-systemd.relax-extension-release-check") ||
+                        string_contains_word(mount_options_from_designator(options, PARTITION_PORTABLE), ",", "x-systemd.relax-extension-release-check") ||
                         string_contains_word(options->options, ",", "x-systemd.relax-extension-release-check");
 }
 

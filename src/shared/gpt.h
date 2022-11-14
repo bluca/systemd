@@ -34,6 +34,12 @@ typedef enum PartitionDesignator {
         PARTITION_USR_VERITY_SIG,
         PARTITION_USR_SECONDARY_VERITY_SIG,
         PARTITION_USR_OTHER_VERITY_SIG,
+        PARTITION_SYSEXT,
+        PARTITION_SYSEXT_VERITY,
+        PARTITION_SYSEXT_VERITY_SIG,
+        PARTITION_PORTABLE,
+        PARTITION_PORTABLE_VERITY,
+        PARTITION_PORTABLE_VERITY_SIG,
         PARTITION_TMP,
         PARTITION_VAR,
         PARTITION_USER_HOME,
@@ -86,3 +92,5 @@ const char *gpt_partition_type_mountpoint_nulstr(sd_id128_t id);
 bool gpt_partition_type_knows_read_only(sd_id128_t id);
 bool gpt_partition_type_knows_growfs(sd_id128_t id);
 bool gpt_partition_type_knows_no_auto(sd_id128_t id);
+
+GptPartitionType gpt_partition_type_from_uuid(sd_id128_t id);

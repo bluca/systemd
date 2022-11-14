@@ -520,7 +520,6 @@ static int merge_subprocess(Hashmap *images, const char *workspace) {
                         DissectImageFlags flags =
                                 DISSECT_IMAGE_READ_ONLY |
                                 DISSECT_IMAGE_GENERIC_ROOT |
-                                DISSECT_IMAGE_REQUIRE_ROOT |
                                 DISSECT_IMAGE_MOUNT_ROOT_ONLY |
                                 DISSECT_IMAGE_USR_NO_ROOT;
 
