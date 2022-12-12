@@ -147,6 +147,8 @@ static size_t arg_n_filter_partitions = 0;
 static FilterPartitionsType arg_filter_partitions_type = FILTER_PARTITIONS_NONE;
 static sd_id128_t *arg_defer_partitions = NULL;
 static size_t arg_n_defer_partitions = 0;
+static void *arg_opal_admin_password = NULL;
+static size_t arg_opal_admin_password_size = 0;
 
 STATIC_DESTRUCTOR_REGISTER(arg_root, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_image, freep);
@@ -157,6 +159,7 @@ STATIC_DESTRUCTOR_REGISTER(arg_certificate, X509_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_tpm2_device, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_tpm2_public_key, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_filter_partitions, freep);
+STATIC_DESTRUCTOR_REGISTER(arg_opal_admin_password, erase_and_freep);
 
 typedef struct FreeArea FreeArea;
 
@@ -3215,6 +3218,213 @@ static int partition_target_sync(Context *context, Partition *p, PartitionTarget
         return 0;
 }
 
+static void* deactivate_and_freep(void *p) {
+        if (!p)
+                return NULL;
+
+        char *node = *(char **)p;
+        if (!node)
+                return NULL;
+
+#if HAVE_LIBCRYPTSETUP
+        int r;
+
+        /* udev or so might access out block device in the background while we are done. Let's hence force
+         * detach the volume. We sync'ed before, hence this should be safe. */
+
+        r = sym_crypt_deactivate_by_name(NULL, basename(node), CRYPT_DEACTIVATE_FORCE);
+        if (r < 0)
+                log_error_errno(r, "Failed to deactivate LUKS device %s: %m", node);
+#endif
+
+        return mfree(node);
+}
+
+#ifndef CRYPT_OPAL
+#define CRYPT_OPAL "OPAL"
+struct crypt_params_opal {
+       const struct crypt_pbkdf_type *pbkdf; /**< PBKDF (and hash) parameters or @e NULL*/
+       const char *data_device; /**< detached encrypted data device or @e NULL */
+       const char *label;       /**< header label or @e NULL*/
+       const char *subsystem;   /**< header subsystem label or @e NULL*/
+       const void *admin_key;   /**< admin key */
+       size_t admin_key_size;   /**< admin key size in bytes */
+};
+#endif
+
+static int partition_encrypt_opal(Context *context, Partition *p, const char *node, char **ret_volume) {
+#if HAVE_LIBCRYPTSETUP && defined(CRYPT_OPAL)
+        struct crypt_params_opal opal_params = {
+                .label = strempty(ASSERT_PTR(p)->new_label),
+                .data_device = node,
+                .admin_key = arg_opal_admin_password,
+                .admin_key_size = arg_opal_admin_password_size,
+        };
+        _cleanup_(erase_and_freep) char *base64_encoded = NULL;
+        _cleanup_(sym_crypt_freep) struct crypt_device *cd = NULL;
+        _cleanup_free_ char *dm_name = NULL, *vol = NULL;
+        const char *passphrase = NULL;
+        size_t passphrase_size = 0;
+        sd_id128_t uuid;
+        int r;
+
+        assert(context);
+        assert(p);
+        assert(p->encrypt != ENCRYPT_OFF);
+        assert(arg_opal_admin_password);
+        assert(arg_opal_admin_password_size > 0);
+
+        r = dlopen_cryptsetup();
+        if (r < 0)
+                return log_error_errno(r, "libcryptsetup not found, cannot encrypt: %m");
+
+        if (asprintf(&dm_name, "luks-repart-%08" PRIx64, random_u64()) < 0)
+                return log_oom();
+
+        if (ret_volume) {
+                vol = path_join("/dev/mapper/", dm_name);
+                if (!vol)
+                        return log_oom();
+        }
+
+        r = derive_uuid(p->new_uuid, "luks-uuid", &uuid);
+        if (r < 0)
+                return r;
+
+        log_info("Encrypting partition %" PRIu64 "...", p->partno);
+
+        r = sym_crypt_init(&cd, node);
+        if (r < 0)
+                return log_error_errno(r, "Failed to allocate libcryptsetup context: %m");
+
+        cryptsetup_enable_logging(cd);
+
+        r = sym_crypt_format(cd,
+                         CRYPT_OPAL,
+                         "cipher_null",
+                         "ecb",
+                         SD_ID128_TO_UUID_STRING(uuid),
+                         NULL,
+                         VOLUME_KEY_SIZE,
+                         &opal_params);
+        if (r < 0)
+                return log_error_errno(r, "Failed to LUKS2 format future partition: %m");
+
+        if (IN_SET(p->encrypt, ENCRYPT_KEY_FILE, ENCRYPT_KEY_FILE_TPM2)) {
+                r = sym_crypt_keyslot_add_by_volume_key(
+                                cd,
+                                CRYPT_ANY_SLOT,
+                                NULL,
+                                VOLUME_KEY_SIZE,
+                                strempty(arg_key),
+                                arg_key_size);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to add LUKS2 key: %m");
+
+                passphrase = strempty(arg_key);
+                passphrase_size = arg_key_size;
+        }
+
+        if (IN_SET(p->encrypt, ENCRYPT_TPM2, ENCRYPT_KEY_FILE_TPM2)) {
+#if HAVE_TPM2
+                _cleanup_(json_variant_unrefp) JsonVariant *v = NULL;
+                _cleanup_(erase_and_freep) void *secret = NULL;
+                _cleanup_free_ void *pubkey = NULL;
+                _cleanup_free_ void *blob = NULL, *hash = NULL;
+                size_t secret_size, blob_size, hash_size, pubkey_size = 0;
+                uint16_t pcr_bank, primary_alg;
+                int keyslot;
+
+                if (arg_tpm2_public_key_pcr_mask != 0) {
+                        r = tpm2_load_pcr_public_key(arg_tpm2_public_key, &pubkey, &pubkey_size);
+                        if (r < 0) {
+                                if (arg_tpm2_public_key || r != -ENOENT)
+                                        return log_error_errno(r, "Failed read TPM PCR public key: %m");
+
+                                log_debug_errno(r, "Failed to read TPM2 PCR public key, proceeding without: %m");
+                                arg_tpm2_public_key_pcr_mask = 0;
+                        }
+                }
+
+                r = tpm2_seal(arg_tpm2_device,
+                              arg_tpm2_pcr_mask,
+                              pubkey, pubkey_size,
+                              arg_tpm2_public_key_pcr_mask,
+                              /* pin= */ NULL,
+                              &secret, &secret_size,
+                              &blob, &blob_size,
+                              &hash, &hash_size,
+                              &pcr_bank,
+                              &primary_alg);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to seal to TPM2: %m");
+
+                r = base64mem(secret, secret_size, &base64_encoded);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to base64 encode secret key: %m");
+
+                r = cryptsetup_set_minimal_pbkdf(cd);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to set minimal PBKDF: %m");
+
+                keyslot = sym_crypt_keyslot_add_by_volume_key(
+                                cd,
+                                CRYPT_ANY_SLOT,
+                                NULL,
+                                VOLUME_KEY_SIZE,
+                                base64_encoded,
+                                strlen(base64_encoded));
+                if (keyslot < 0)
+                        return log_error_errno(keyslot, "Failed to add new TPM2 key: %m");
+
+                r = tpm2_make_luks2_json(
+                                keyslot,
+                                arg_tpm2_pcr_mask,
+                                pcr_bank,
+                                pubkey, pubkey_size,
+                                arg_tpm2_public_key_pcr_mask,
+                                primary_alg,
+                                blob, blob_size,
+                                hash, hash_size,
+                                0,
+                                &v);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to prepare TPM2 JSON token object: %m");
+
+                r = cryptsetup_add_token_json(cd, v);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to add TPM2 JSON token to LUKS2 header: %m");
+
+                passphrase = base64_encoded;
+                passphrase_size = strlen(base64_encoded);
+#else
+                return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
+                                       "Support for TPM2 enrollment not enabled.");
+#endif
+        }
+
+        r = sym_crypt_activate_by_passphrase(
+                        cd,
+                        NULL,
+                        CRYPT_ANY_SLOT,
+                        passphrase,
+                        passphrase_size,
+                        0);
+        if (r < 0)
+                return log_error_errno(r, "Failed to prepare for reencryption: %m");
+
+        log_info("Successfully encrypted partition %" PRIu64 ".", p->partno);
+
+        if (ret_volume)
+                *ret_volume = TAKE_PTR(vol);
+
+        return 0;
+#else
+        return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
+                               "libcryptsetup or sed-opal are not supported, cannot encrypt: %m");
+#endif
+}
+
 static int partition_encrypt(Context *context, Partition *p, const char *node) {
 #if HAVE_LIBCRYPTSETUP && HAVE_CRYPT_SET_DATA_OFFSET && HAVE_CRYPT_REENCRYPT_INIT_BY_PASSPHRASE && HAVE_CRYPT_REENCRYPT
         struct crypt_params_luks2 luks_params = {
@@ -4003,12 +4213,12 @@ static int context_mkfs(Context *context) {
 
                 assert(p->offset != UINT64_MAX);
                 assert(p->new_size != UINT64_MAX);
-                assert(p->new_size >= (p->encrypt != ENCRYPT_OFF ? LUKS2_METADATA_KEEP_FREE : 0));
+                assert(p->new_size >= (p->encrypt != ENCRYPT_OFF && arg_opal_admin_password_size == 0 ? LUKS2_METADATA_KEEP_FREE : 0));
 
                 /* If we're doing encryption, we make sure we keep free space at the end which is required
                  * for cryptsetup's offline encryption. */
                 r = partition_target_prepare(context, p,
-                                             p->new_size - (p->encrypt != ENCRYPT_OFF ? LUKS2_METADATA_KEEP_FREE : 0),
+                                             p->new_size - (p->encrypt != ENCRYPT_OFF && arg_opal_admin_password_size == 0 ? LUKS2_METADATA_KEEP_FREE : 0),
                                              /*need_path=*/ true,
                                              &t);
                 if (r < 0)
@@ -4031,30 +4241,60 @@ static int context_mkfs(Context *context) {
                                 return r;
                 }
 
-                r = make_filesystem(partition_target_path(t), p->format, strempty(p->new_label), root,
-                                    p->fs_uuid, arg_discard, NULL);
-                if (r < 0)
-                        return r;
+                if (p->encrypt != ENCRYPT_OFF && arg_opal_admin_password_size > 0) {
+                        _cleanup_(deactivate_and_freep) char *encrypted = NULL;
+                        _cleanup_free_ char *partition_device = NULL;
 
-                log_info("Successfully formatted future partition %" PRIu64 ".", p->partno);
-
-                /* If we're writing to a loop device, we can now mount the empty filesystem and populate it. */
-                if (partition_needs_populate(p) && !root) {
                         assert(t->loop);
+                        assert(t->loop->backing_file);
 
-                        r = partition_populate_filesystem(p, t->loop->node, denylist);
+                        r = asprintf(&partition_device, "%s%" PRIu64, t->loop->backing_file, p->partno);
                         if (r < 0)
-                                return r;
-                }
+                                return log_oom();
 
-                if (p->encrypt != ENCRYPT_OFF) {
-                        r = partition_target_grow(t, p->new_size);
-                        if (r < 0)
-                                return r;
-
-                        r = partition_encrypt(context, p, partition_target_path(t));
+                        r = partition_encrypt_opal(context, p, partition_device, &encrypted);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to encrypt device: %m");
+
+                        r = make_filesystem(encrypted, p->format, strempty(p->new_label), root,
+                                        p->fs_uuid, arg_discard, NULL);
+                        if (r < 0)
+                                return r;
+
+                        log_info("Successfully formatted future partition %" PRIu64 ".", p->partno);
+
+                        /* If we're writing to a loop device, we can now mount the empty filesystem and populate it. */
+                        if (partition_needs_populate(p)) {
+                                r = partition_populate_filesystem(p, encrypted, denylist);
+                                if (r < 0)
+                                        return r;
+                        }
+                } else {
+                        r = make_filesystem(partition_target_path(t), p->format, strempty(p->new_label), root,
+                                        p->fs_uuid, arg_discard, NULL);
+                        if (r < 0)
+                                return r;
+
+                        log_info("Successfully formatted future partition %" PRIu64 ".", p->partno);
+
+                        /* If we're writing to a loop device, we can now mount the empty filesystem and populate it. */
+                        if (partition_needs_populate(p) && !root) {
+                                assert(t->loop);
+
+                                r = partition_populate_filesystem(p, t->loop->node, denylist);
+                                if (r < 0)
+                                        return r;
+                        }
+
+                        if (p->encrypt != ENCRYPT_OFF) {
+                                r = partition_target_grow(t, p->new_size);
+                                if (r < 0)
+                                        return r;
+
+                                r = partition_encrypt(context, p, partition_target_path(t));
+                                if (r < 0)
+                                        return log_error_errno(r, "Failed to encrypt device: %m");
+                        }
                 }
 
                 /* Note that we always sync explicitly here, since mkfs.fat doesn't do that on its own, and
@@ -4721,9 +4961,9 @@ static int context_write_partition_table(Context *context) {
         if (r < 0)
                 return r;
 
-        r = context_mkfs(context);
-        if (r < 0)
-                return r;
+        // r = context_mkfs(context);
+        // if (r < 0)
+        //         return r;
 
         r = context_mangle_partitions(context);
         if (r < 0)
@@ -4751,6 +4991,10 @@ static int context_write_partition_table(Context *context) {
                         return log_error_errno(r, "Failed to reread partition table: %m");
         } else
                 log_notice("Not telling kernel to reread partition table, because selected image does not support kernel partition block devices.");
+
+        r = context_mkfs(context);
+        if (r < 0)
+                return r;
 
         log_info("All done.");
 
@@ -5550,6 +5794,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_INCLUDE_PARTITIONS,
                 ARG_EXCLUDE_PARTITIONS,
                 ARG_DEFER_PARTITIONS,
+                ARG_OPAL_ADMIN_PASSWORD,
         };
 
         static const struct option options[] = {
@@ -5580,6 +5825,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "include-partitions",   required_argument, NULL, ARG_INCLUDE_PARTITIONS   },
                 { "exclude-partitions",   required_argument, NULL, ARG_EXCLUDE_PARTITIONS   },
                 { "defer-partitions",     required_argument, NULL, ARG_DEFER_PARTITIONS     },
+                { "opal-admin-password",  required_argument, NULL, ARG_OPAL_ADMIN_PASSWORD  },
                 {}
         };
 
@@ -5864,6 +6110,24 @@ static int parse_argv(int argc, char *argv[]) {
                         r = parse_partition_types(optarg, &arg_defer_partitions, &arg_n_defer_partitions);
                         if (r < 0)
                                 return r;
+
+                        break;
+
+                case ARG_OPAL_ADMIN_PASSWORD:
+#ifndef CRYPT_OPAL
+                        return log_error_errno(SYNTHETIC_ERRNO(EOPNOTSUPP),
+                                               "OPAL support not available in libcryptsetup.");
+#endif
+
+                        erase_and_free(arg_opal_admin_password);
+
+                        arg_opal_admin_password_size = strlen(optarg);
+                        if (arg_opal_admin_password_size == 0)
+                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                       "Empty OPAL password not allowed.");
+
+                        arg_opal_admin_password = malloc(arg_opal_admin_password_size);
+                        memcpy(arg_opal_admin_password, optarg, arg_opal_admin_password_size);
 
                         break;
 
