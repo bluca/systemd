@@ -196,3 +196,5 @@ bool invoked_by_systemd(void);
 _noreturn_ void freeze(void);
 
 bool argv_looks_like_help(int argc, char **argv);
+
+int get_process_threads(pid_t pid);
