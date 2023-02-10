@@ -685,6 +685,10 @@ tests += [
         [files('test-hmac.c')],
 
         [files('test-sha256.c')],
+
+        [files('test-mempress.c'),
+         [],
+         [threads]],
 ]
 
 ############################################################
