@@ -2785,8 +2785,7 @@ int main(int argc, char *argv[]) {
                 if (detect_container() <= 0) {
 
                         /* Running outside of a container as PID 1 */
-                        log_set_target(LOG_TARGET_KMSG);
-                        log_open();
+                        log_set_target_and_open(LOG_TARGET_KMSG);
 
                         if (in_initrd())
                                 initrd_timestamp = userspace_timestamp;
@@ -2830,8 +2829,7 @@ int main(int argc, char *argv[]) {
 
                 } else {
                         /* Running inside a container, as PID 1 */
-                        log_set_target(LOG_TARGET_CONSOLE);
-                        log_open();
+                        log_set_target_and_open(LOG_TARGET_CONSOLE);
 
                         /* For later on, see above... */
                         log_set_target(LOG_TARGET_JOURNAL);
@@ -2878,8 +2876,7 @@ int main(int argc, char *argv[]) {
                 /* Running as user instance */
                 arg_system = false;
                 log_set_always_reopen_console(true);
-                log_set_target(LOG_TARGET_AUTO);
-                log_open();
+                log_set_target_and_open(LOG_TARGET_AUTO);
 
                 /* clear the kernel timestamp, because we are not PID 1 */
                 kernel_timestamp = DUAL_TIMESTAMP_NULL;
