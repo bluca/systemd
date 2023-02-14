@@ -4176,25 +4176,6 @@ endforeach
 ############################################################
 
 if git.found()
-        all_files = run_command(
-                env, '-u', 'GIT_WORK_TREE',
-                git, '--git-dir=@0@/.git'.format(project_source_root),
-                     'ls-files', ':/*.[ch]',
-                check : false)
-        if all_files.returncode() == 0
-                all_files = files(all_files.stdout().split())
-
-                custom_target(
-                        'tags',
-                        output : 'tags',
-                        command : [env, 'etags', '-o', '@0@/TAGS'.format(project_source_root)] + all_files)
-                run_target(
-                        'ctags',
-                        command : [env, 'ctags', '--tag-relative=never', '-o', '@0@/tags'.format(project_source_root)] + all_files)
-        endif
-endif
-
-if git.found()
         git_contrib_sh = find_program('tools/git-contrib.sh')
         run_target(
                 'git-contrib',
