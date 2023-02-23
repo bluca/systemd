@@ -16,6 +16,7 @@
 #include "bus-log-control-api.h"
 #include "bus-polkit.h"
 #include "bus-util.h"
+#include "common-signal.h"
 #include "conf-parser.h"
 #include "daemon-util.h"
 #include "def.h"
@@ -523,6 +524,11 @@ int manager_setup(Manager *m) {
         (void) sd_event_add_signal(m->event, NULL, SIGTERM, signal_terminate_callback, m);
         (void) sd_event_add_signal(m->event, NULL, SIGINT, signal_terminate_callback, m);
         (void) sd_event_add_signal(m->event, NULL, SIGUSR2, signal_restart_callback, m);
+        (void) sd_event_add_signal(m->event, NULL, (SIGRTMIN+18), sigrtmin18_handler, NULL);
+
+        r = sd_event_add_memory_pressure(m->event, NULL, NULL, NULL);
+        if (r < 0)
+                log_debug_errno(r, "Failed allocate memory pressure event source, ignoring: %m");
 
         r = sd_event_add_post(m->event, NULL, manager_dirty_handler, m);
         if (r < 0)
