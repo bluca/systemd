@@ -26,3 +26,4 @@ TasksMax=infinity
 TimeoutStopSec=120s
 KeyringMode=inherit
 OOMScoreAdjust=100
+MemoryPressureWatch=skip
