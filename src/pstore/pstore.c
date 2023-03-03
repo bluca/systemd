@@ -196,7 +196,7 @@ static int write_dmesg(const char *dmesg, size_t size, const char *id) {
                 return log_error_errno(errno, "Failed to store dmesg to %s: %m", ofd_path);
         if (wr != (ssize_t)size)
                 return log_error_errno(SYNTHETIC_ERRNO(EIO), "Failed to store dmesg to %s. %zu bytes are lost.", ofd_path, size - wr);
-        r = link_tmpfile(ofd, tmp_path, ofd_path);
+        r = link_tmpfile(ofd, tmp_path, ofd_path, /* replace= */ false);
         if (r < 0)
                 return log_error_errno(r, "Failed to write temporary file %s: %m", ofd_path);
         tmp_path = mfree(tmp_path);
