@@ -1036,4 +1036,34 @@ TEST(test_read_virtual_file) {
         test_read_virtual_file_one(SIZE_MAX);
 }
 
+TEST(test_read_full_file_full_encode_decode) {
+        _cleanup_(unlink_and_freep) char *fn = NULL;
+        _cleanup_free_ char *buf = NULL;
+        size_t buf_size;
+
+        assert_se(tempfn_random_child(NULL, NULL, &fn) >= 0);
+
+        assert_se(write_string_file(fn, "foobarbaz", WRITE_STRING_FILE_CREATE|WRITE_STRING_FILE_TRUNCATE|WRITE_STRING_FILE_SYNC|WRITE_STRING_FILE_AVOID_NEWLINE) == 0);
+        assert_se(read_full_file_full(AT_FDCWD, fn, UINT64_MAX, SIZE_MAX, READ_FULL_FILE_BASE64, NULL, &buf, &buf_size) >= 0);
+        assert_se(streq(buf, "Zm9vYmFyYmF6"));
+        assert_se(buf_size == strlen("Zm9vYmFyYmF6"));
+        assert_se(write_string_file(fn, buf, WRITE_STRING_FILE_TRUNCATE|WRITE_STRING_FILE_SYNC|WRITE_STRING_FILE_AVOID_NEWLINE) == 0);
+        buf = mfree(buf);
+        assert_se(read_full_file_full(AT_FDCWD, fn, UINT64_MAX, SIZE_MAX, READ_FULL_FILE_UNBASE64, NULL, &buf, &buf_size) >= 0);
+        assert_se(streq(buf, "foobarbaz"));
+        assert_se(buf_size == strlen("foobarbaz"));
+        buf = mfree(buf);
+
+        assert_se(write_string_file(fn, "foobarbaz", WRITE_STRING_FILE_TRUNCATE|WRITE_STRING_FILE_SYNC|WRITE_STRING_FILE_AVOID_NEWLINE) == 0);
+        assert_se(read_full_file_full(AT_FDCWD, fn, UINT64_MAX, SIZE_MAX, READ_FULL_FILE_HEX, NULL, &buf, &buf_size) >= 0);
+        assert_se(streq(buf, "666f6f62617262617a"));
+        assert_se(buf_size == strlen("666f6f62617262617a"));
+        assert_se(write_string_file(fn, buf, WRITE_STRING_FILE_TRUNCATE|WRITE_STRING_FILE_SYNC|WRITE_STRING_FILE_AVOID_NEWLINE) == 0);
+        buf = mfree(buf);
+        assert_se(read_full_file_full(AT_FDCWD, fn, UINT64_MAX, SIZE_MAX, READ_FULL_FILE_UNHEX, NULL, &buf, &buf_size) >= 0);
+        assert_se(streq(buf, "foobarbaz"));
+        assert_se(buf_size == strlen("foobarbaz"));
+        buf = mfree(buf);
+}
+
 DEFINE_TEST_MAIN(LOG_DEBUG);

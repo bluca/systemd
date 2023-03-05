@@ -592,6 +592,11 @@ int read_full_stream_full(
         assert(f);
         assert(ret_contents);
         assert(!FLAGS_SET(flags, READ_FULL_FILE_UNBASE64 | READ_FULL_FILE_UNHEX));
+        assert(!FLAGS_SET(flags, READ_FULL_FILE_BASE64 | READ_FULL_FILE_HEX));
+        assert(!FLAGS_SET(flags, READ_FULL_FILE_UNBASE64 | READ_FULL_FILE_BASE64));
+        assert(!FLAGS_SET(flags, READ_FULL_FILE_UNHEX | READ_FULL_FILE_HEX));
+        assert(!FLAGS_SET(flags, READ_FULL_FILE_UNBASE64 | READ_FULL_FILE_HEX));
+        assert(!FLAGS_SET(flags, READ_FULL_FILE_UNHEX | READ_FULL_FILE_BASE64));
         assert(size != SIZE_MAX || !FLAGS_SET(flags, READ_FULL_FILE_FAIL_WHEN_LARGER));
 
         if (offset != UINT64_MAX && offset > LONG_MAX) /* fseek() can only deal with "long" offsets */
@@ -721,6 +726,29 @@ int read_full_stream_full(
                         explicit_bzero_safe(buf, n);
                 free_and_replace(buf, decoded);
                 n = l = decoded_size;
+        }
+
+        if (flags & (READ_FULL_FILE_BASE64 | READ_FULL_FILE_HEX)) {
+                _cleanup_free_ char *encoded = NULL;
+                ssize_t encoded_size;
+
+                if (flags & READ_FULL_FILE_BASE64) {
+                        r = encoded_size = base64mem(buf, l, &encoded);
+                        if (r < 0)
+                                goto finalize;
+                } else {
+                        encoded = hexmem(buf, l);
+                        if (!encoded) {
+                                r = -ENOMEM;
+                                goto finalize;
+                        }
+                        encoded_size = strlen(encoded);
+                }
+
+                if (flags & READ_FULL_FILE_SECURE)
+                        explicit_bzero_safe(buf, n);
+                free_and_replace(buf, encoded);
+                n = l = encoded_size;
         }
 
         if (!ret_size) {
