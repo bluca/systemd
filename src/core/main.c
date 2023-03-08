@@ -1902,10 +1902,11 @@ static int invoke_main_loop(
                 switch ((ManagerObjective) r) {
 
                 case MANAGER_RELOAD: {
+                        usec_t reload_started = now(CLOCK_MONOTONIC);
                         LogTarget saved_log_target;
                         int saved_log_level;
 
-                        log_info("Reloading.");
+                        log_info("Reloading...");
 
                         /* First, save any overridden log level/target, then parse the configuration file, which might
                          * change the log level to new settings. */
@@ -1930,6 +1931,9 @@ static int invoke_main_loop(
                         if (r < 0)
                                 /* Reloading failed before the point of no return. Let's continue running as if nothing happened. */
                                 m->objective = MANAGER_OK;
+                        else
+                                log_info("Reloading finished in " USEC_FMT " ms.",
+                                         usec_sub_unsigned(now(CLOCK_MONOTONIC), reload_started) / USEC_PER_MSEC);
 
                         break;
                 }
