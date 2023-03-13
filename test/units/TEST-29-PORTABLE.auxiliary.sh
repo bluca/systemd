@@ -176,33 +176,85 @@ cat <<EOF >/tmp/app0/usr/share/polkit-1/actions/app0.policy
         </action>
 </policyconfig>
 EOF
+
+have_fsverity=0
+if command -v openssl >/dev/null 2>&1 && command -v fsverity >/dev/null 2>&1 && command -v xxd >/dev/null 2>&1; then
+    # Unfortunately OpenSSL insists on reading some config file, hence provide one with mostly placeholder contents
+    cat >/tmp/minimal_0.openssl.cnf <<EOF
+[ req ]
+prompt = no
+distinguished_name = req_distinguished_name
+
+[ req_distinguished_name ]
+C = DE
+ST = Test State
+L = Test Locality
+O = Org Name
+OU = Org Unit Name
+CN = Common Name
+emailAddress = test@email.com
+EOF
+    openssl req -config /tmp/minimal_0.openssl.cnf -new -x509 -newkey rsa:1024 -keyout /tmp/minimal_0.key -out /tmp/minimal_0.crt -days 365 -nodes
+    openssl x509 -outform der -in /tmp/minimal_0.crt -out /tmp/minimal_0.cer
+
+    # Given enabling verity is a one-way operation, and the host might need to mount the image (e.g.: to extract
+    # logs) we create an ext4 filesystem that we use just for this test and then discard.
+    dd if=/dev/zero of=/tmp/verity.ext4 bs=4M count=1
+    # fsverity imposes that the filesystem's block size is equival to the kernel's page size. Default to 4KB.
+    page_size="$(grep KernelPageSize /proc/self/smaps | head -n1 | awk '{print $2}')"
+    if [ -z "${page_size}" ]; then
+        page_size=4
+    fi
+    mkfs.ext4 -b "${page_size}k" -F /tmp/verity.ext4
+
+    # Both mkfs and the kernel need to support verity, so don't fail if enabling or mounting fails
+    if keyctl padd asymmetric "minimal_0" %keyring:.fs-verity < /tmp/minimal_0.cer && tune2fs -O verity /tmp/verity.ext4 && mount -o X-mount.mkdir /tmp/verity.ext4 /etc/systemd/system.attached/; then
+        fsverity digest --hash-alg=sha256 --for-builtin-sig --compact /tmp/app0/usr/lib/systemd/system/app0.service | \
+            tr -d '\n' | \
+            xxd -p -r | \
+                openssl smime -sign -nocerts -noattr -binary -in /dev/stdin -inkey /tmp/minimal_0.key -signer /tmp/minimal_0.crt -outform der -out /tmp/app0/usr/lib/systemd/system/app0.service.p7s
+
+        have_fsverity=1
+    fi
+fi
+
 mksquashfs /tmp/app0 /tmp/app0.raw -noappend
 rm -rf /tmp/app0
 
-portablectl "${ARGS[@]}" attach --now --runtime --extension /tmp/app0.raw /usr/share/minimal_0.raw app0
+portablectl "${ARGS[@]}" attach --now --extension /tmp/app0.raw /usr/share/minimal_0.raw app0
 
 systemctl is-active app0.service
 status="$(portablectl is-attached --extension app0 minimal_0)"
-[[ "${status}" == "running-runtime" ]]
+[[ "${status}" == "running" ]]
 
-grep -q -F "LogExtraFields=PORTABLE_ROOT=minimal_0.raw" /run/systemd/system.attached/app0.service.d/20-portable.conf
-grep -q -F "LogExtraFields=PORTABLE_EXTENSION=app0.raw" /run/systemd/system.attached/app0.service.d/20-portable.conf
-grep -q -F "LogExtraFields=PORTABLE_EXTENSION_NAME_AND_VERSION=app" /run/systemd/system.attached/app0.service.d/20-portable.conf
+grep -q -F "LogExtraFields=PORTABLE_ROOT=minimal_0.raw" /etc/systemd/system.attached/app0.service.d/20-portable.conf
+grep -q -F "LogExtraFields=PORTABLE_EXTENSION=app0.raw" /etc/systemd/system.attached/app0.service.d/20-portable.conf
+grep -q -F "LogExtraFields=PORTABLE_EXTENSION_NAME_AND_VERSION=app" /etc/systemd/system.attached/app0.service.d/20-portable.conf
 grep -q -F "org.freedesktop.app0" /etc/dbus-1/system.d/app0.conf
 grep -q -F "org.freedesktop.app0" /etc/dbus-1/system-services/app0.service
 grep -q -F "org.freedesktop.app0" /etc/polkit-1/actions/app0.policy
+if [ "$have_fsverity" -eq 1 ]; then
+    fsverity measure /etc/systemd/system.attached/app0.service
+    fsverity measure /etc/systemd/system.attached/app0.service.d/20-portable.conf
+    # Again, with signature enforcement, only the signed version should work
+    echo 1 > /proc/sys/fs/verity/require_signatures
+fi
 
-portablectl "${ARGS[@]}" reattach --now --runtime --extension /tmp/app0.raw /usr/share/minimal_1.raw app0
+portablectl "${ARGS[@]}" reattach --now --extension /tmp/app0.raw /usr/share/minimal_1.raw app0
 
 systemctl is-active app0.service
 status="$(portablectl is-attached --extension app0 minimal_1)"
-[[ "${status}" == "running-runtime" ]]
+[[ "${status}" == "running" ]]
 
-grep -q -F "LogExtraFields=PORTABLE_ROOT=minimal_1.raw" /run/systemd/system.attached/app0.service.d/20-portable.conf
-grep -q -F "LogExtraFields=PORTABLE_EXTENSION=app0.raw" /run/systemd/system.attached/app0.service.d/20-portable.conf
-grep -q -F "LogExtraFields=PORTABLE_EXTENSION_NAME_AND_VERSION=app" /run/systemd/system.attached/app0.service.d/20-portable.conf
+grep -q -F "LogExtraFields=PORTABLE_ROOT=minimal_1.raw" /etc/systemd/system.attached/app0.service.d/20-portable.conf
+grep -q -F "LogExtraFields=PORTABLE_EXTENSION=app0.raw" /etc/systemd/system.attached/app0.service.d/20-portable.conf
+grep -q -F "LogExtraFields=PORTABLE_EXTENSION_NAME_AND_VERSION=app" /etc/systemd/system.attached/app0.service.d/20-portable.conf
+if [ "$have_fsverity" -eq 1 ]; then
+    fsverity measure /etc/systemd/system.attached/app0.service
+    fsverity measure /etc/systemd/system.attached/app0.service.d/20-portable.conf && { echo 'unexpected success'; exit 1; }
+fi
 
-portablectl detach --now --runtime --extension /tmp/app0.raw /usr/share/minimal_1.raw app0
+portablectl detach --now --extension /tmp/app0.raw /usr/share/minimal_1.raw app0
 
 test ! -f /etc/dbus-1/system.d/app0.conf
 test ! -f /etc/dbus-1/system-services/app0.service

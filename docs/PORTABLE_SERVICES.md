@@ -133,6 +133,14 @@ This command does the following:
    and their respective services are reloaded. This allows the portable services to
    optionally provide a D-Bus interface, optionally authenticating clients via polkit.
 
+5. For each such units and drop-in files, if the kernel supports it, fsverity
+   will be used to provide integrity protection. If a `security.ima` extended
+   attribute is present on a file, it will be copied and re-applied. If a pkcs7
+   signature of the fsverity digest is available next to the unit, for example as
+   `foobar.service.p7s`, it will be automatically used to enable signed fsverity
+   integrity protection. See the [fsverity section](#fsverity-protection-for-copied-units)
+   for more information and examples.
+
 And that's already it.
 
 Note that the images need to stay around (and in the same location) as long as the
@@ -363,6 +371,49 @@ PORTABLE_EXTENSION=app0.raw
 PORTABLE_EXTENSION_NAME_AND_VERSION=app_0
 PORTABLE_EXTENSION=app1.raw
 PORTABLE_EXTENSION_NAME_AND_VERSION=app_1
+```
+
+## fsverity protection for copied units
+
+Portable images support signed dm-verity for integrity protection. But as
+discussed above, unit files and drop-ins are copied out or created on the fly,
+and stored on a writable system filesystem, which leaves them open to tampering.
+If the kernel supports it, fsverity will be used automatically on such files, to
+provide integrity protection and measurement in the IMA registry. If a
+`security.ima` extended attribute is present on a file, it will be copied and
+re-applied. Furthermore, if the unit files are accompanied by a pkcs7 signature
+of the fsverity digest of the unit, they will be automatically used to provide
+signed fsverity integrity protection, again if the kernel supports it. For more
+information on fsverity, on the required kernel versions, filesystems and kernel
+configuration, see the
+[`kernel's documentation`](https://www.kernel.org/doc/html/latest/filesystems/fsverity.html).
+
+To generate an fsverity digest signature, the `fsverity` command line utility
+from the [`fsverity-utils project`](https://git.kernel.org/pub/scm/fs/fsverity/fsverity-utils.git)
+can be used, for example given `foobar.service` as a unit, and `key` and `crt`
+as RSA private key and public certificate, the following example will create a
+detached signature of the fsverity digest of `foobar.service`:
+
+```
+fsverity digest --hash-alg=sha256 --for-builtin-sig --compact foobar.service | \
+  tr -d '\n' | \
+  xxd -p -r | \
+  openssl smime -sign -nocerts -noattr -binary -in /dev/stdin -inkey key -signer crt -outform der -out foobar.service.p7s
+```
+
+At runtime, the public certificate (in `DER` format) must be loaded in the
+fsverity kernel keyring to make use of the signature:
+
+```
+keyctl padd asymmetric "foopubkey" %keyring:.fs-verity < cer
+```
+
+After attaching the portable image, it can be verified that fsverity is indeed
+enabled with:
+
+```
+# fsverity measure /etc/systemd/system.attached/foobar.service
+sha256:80d97e1edb15dc2a442b946f4399fefb8b749514dacead6005fa8d99800ebb06
 ```
 
 ## Links

@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+#include <linux/fsverity.h>
 #include <linux/loop.h>
+#include <sys/ioctl.h>
 
 #include "sd-messages.h"
 
@@ -28,6 +30,7 @@
 #include "iovec-util.h"
 #include "locale-util.h"
 #include "loop-util.h"
+#include "memfd-util.h"
 #include "mkdir.h"
 #include "nulstr-util.h"
 #include "os-util.h"
@@ -51,6 +54,41 @@
  * dropped there by the portable service logic and b) for which image it was dropped there. */
 #define PORTABLE_DROPIN_MARKER_BEGIN "# Drop-in created for image '"
 #define PORTABLE_DROPIN_MARKER_END "', do not edit."
+
+static int fsverity_enable(int fd, const char *path, const void *signature, size_t signature_size) {
+        struct fsverity_enable_arg params = {
+                .hash_algorithm = FS_VERITY_HASH_ALG_SHA256,
+                .sig_ptr = (uintptr_t) signature,
+                .sig_size = signature_size,
+                /* Up until kernel 6.3, the fsverity block size must be equal to the page size (and FS block size) */
+                .block_size = page_size(),
+                .version = 1,
+        };
+        _cleanup_close_ int read_only_fd = -EBADF;
+        int r;
+
+        assert(fd >= 0 || path);
+        assert(path);
+        assert(signature || signature_size == 0);
+
+        if (fd == -EBADF) {
+                fd = read_only_fd = open(path, O_RDONLY|O_CLOEXEC|O_NOCTTY);
+                if (fd < 0)
+                        return -errno;
+        }
+
+        r = RET_NERRNO(ioctl(fd, FS_IOC_ENABLE_VERITY, &params));
+        if (r == -ENOPKG) {
+                /* No SHA256 compiled in the kernel? Try with SHA512 before giving up */
+                params.hash_algorithm = FS_VERITY_HASH_ALG_SHA512;
+                r = RET_NERRNO(ioctl(fd, FS_IOC_ENABLE_VERITY, &params));
+        }
+
+        if (r == 0)
+                log_debug("Successfully enabled fs-verity on %s.", path);
+
+        return r;
+}
 
 static bool prefix_match(const char *unit, const char *prefix) {
         const char *p;
@@ -85,8 +123,17 @@ static bool unit_match(const char *unit, char **matches) {
         return false;
 }
 
-static PortableMetadata *portable_metadata_new(const char *name, const char *path, const char *selinux_label, int fd) {
+static PortableMetadata *portable_metadata_new(
+                const char *name,
+                const char *path,
+                const char *selinux_label,
+                PortableMetadataSignatureType signature_type,
+                int signature_fd,
+                int fd) {
+
         PortableMetadata *m;
+
+        assert(signature_type < _PORTABLE_METADATA_SIGNATURE_TYPE_MAX);
 
         m = malloc0(offsetof(PortableMetadata, name) + strlen(name) + 1);
         if (!m)
@@ -110,6 +157,8 @@ static PortableMetadata *portable_metadata_new(const char *name, const char *pat
 
         strcpy(m->name, name);
         m->fd = fd;
+        m->signature_fd = signature_fd;
+        m->signature_type = signature_type;
 
         return TAKE_PTR(m);
 }
@@ -119,6 +168,7 @@ PortableMetadata *portable_metadata_unref(PortableMetadata *i) {
                 return NULL;
 
         safe_close(i->fd);
+        safe_close(i->signature_fd);
         free(i->source);
         free(i->image_path);
         free(i->selinux_label);
@@ -191,10 +241,12 @@ static int send_files(
                 }
 
                 FOREACH_DIRENT(de, d, return log_debug_errno(errno, "Failed to read directory: %m")) {
+                        PortableMetadataSignatureType signature_type = PORTABLE_METADATA_SIGNATURE_TYPE_NONE;
+                        _cleanup_free_ char *signature_filename = NULL, *ima_xattr = NULL;
                         _cleanup_(portable_metadata_unrefp) PortableMetadata *m = NULL;
                         _cleanup_free_ char *resolved_filename = NULL;
                         _cleanup_freecon_ char *con = NULL;
-                        _cleanup_close_ int fd = -EBADF;
+                        _cleanup_close_ int fd = -EBADF, signature_fd = -EBADF;
                         char *relative_filename;
                         struct stat st;
 
@@ -244,6 +296,31 @@ static int send_files(
                                 continue;
                         }
 
+                        /* Does the unit come with a signature? First, check for an ima xattr signature.
+                         * If that's absent, then check for a detached pkcs7 signature, which can be used
+                         * with fsverity. */
+                        r = fgetxattr_malloc(fd, "security.ima", &ima_xattr);
+                        if (r > 0) {
+                                signature_type = PORTABLE_METADATA_SIGNATURE_TYPE_IMA;
+
+                                signature_fd = memfd_new_and_seal("ima-xattr", ima_xattr, r);
+                                if (signature_fd < 0)
+                                        return log_debug_errno(signature_fd, "Failed to create memfd: %m");
+                        } else if (r < 0) {
+                                if (!ERRNO_IS_XATTR_ABSENT(r))
+                                        log_debug_errno(r, "Failed to get IMA xattr from '%s', ignoring: %m", de->d_name);
+
+                                signature_filename = strjoin(de->d_name, ".p7s");
+                                if (!signature_filename)
+                                        return -ENOMEM;
+
+                                signature_fd = openat(dirfd(d), signature_filename, O_CLOEXEC|O_RDONLY);
+                                if (signature_fd < 0 && errno != -ENOENT)
+                                        log_debug_errno(errno, "Failed to read signature file '%s', ignoring: %m", signature_filename);
+                                else
+                                        signature_type = PORTABLE_METADATA_SIGNATURE_TYPE_P7S;
+                        }
+
                         resolved_filename = path_join(resolved, de->d_name);
                         if (!resolved_filename)
                                 return -ENOMEM;
@@ -264,19 +341,31 @@ static int send_files(
                                 struct iovec iov[] = {
                                         IOVEC_MAKE_STRING(relative_filename),
                                         IOVEC_MAKE((char *)"\0", sizeof(char)),
+                                        IOVEC_MAKE((PortableMetadataSignatureType *)&signature_type, sizeof(PortableMetadataSignatureType)),
                                         IOVEC_MAKE_STRING(strempty(con)),
                                 };
+
+                                /* We are sending this over in an iovec, ensure it's 1 byte so that we
+                                 * don't have to worry about alignment. */
+                                assert_se(sizeof(PortableMetadataSignatureType) == 1);
 
                                 r = send_one_fd_iov_with_data_fd(socket_fd, iov, ELEMENTSOF(iov), fd);
                                 if (r < 0)
                                         return log_debug_errno(r, "Failed to send file metadata to parent: %m");
+
+                                if (signature_fd >= 0) {
+                                        r = send_one_fd_iov_with_data_fd(socket_fd, NULL, 0, signature_fd);
+                                        if (r < 0)
+                                                return log_debug_errno(r, "Failed to send signature: %m");
+                                }
                         }
 
                         if (files) {
-                                m = portable_metadata_new(relative_filename, where, con, fd);
+                                m = portable_metadata_new(relative_filename, where, con, signature_type, signature_fd, fd);
                                 if (!m)
                                         return -ENOMEM;
                                 TAKE_FD(fd);
+                                TAKE_FD(signature_fd);
 
                                 m->source = TAKE_PTR(resolved_filename);
 
@@ -361,7 +450,12 @@ static int extract_now(
                 }
 
                 if (ret_os_release) {
-                        os_release = portable_metadata_new(os_release_id, NULL, NULL, os_release_fd);
+                        os_release = portable_metadata_new(os_release_id,
+                                                           /* path= */ NULL,
+                                                           /* selinux_label= */ NULL,
+                                                           PORTABLE_METADATA_SIGNATURE_TYPE_NONE,
+                                                           /* signature_fd= */ -EBADF,
+                                                           os_release_fd);
                         if (!os_release)
                                 return -ENOMEM;
 
@@ -553,8 +647,9 @@ static int portable_extract_by_path(
                         return -ENOMEM;
 
                 for (;;) {
+                        PortableMetadataSignatureType signature_type = PORTABLE_METADATA_SIGNATURE_TYPE_NONE;
                         _cleanup_(portable_metadata_unrefp) PortableMetadata *add = NULL;
-                        _cleanup_close_ int fd = -EBADF;
+                        _cleanup_close_ int fd = -EBADF, signature_fd = -EBADF;
                         /* We use NAME_MAX space for the SELinux label here. The kernel currently enforces no limit, but
                          * according to suggestions from the SELinux people this will change and it will probably be
                          * identical to NAME_MAX. For now we use that, but this should be updated one day when the final
@@ -582,12 +677,29 @@ static int portable_extract_by_path(
                          * use a marker to separate the name and the optional SELinux context. */
                         char *selinux_label = memchr(iov_buffer, 0, n);
                         assert(selinux_label);
-                        selinux_label++;
 
-                        add = portable_metadata_new(iov_buffer, path, selinux_label, fd);
+                        /* Finally we might get a signature. Given there's no limit on the size (it might
+                         * contain a certificate chain), we send an optional second FD. */
+                        if (n > selinux_label + sizeof(PortableMetadataSignatureType) - (char *)iov.iov_base) {
+                                signature_type = *(PortableMetadataSignatureType *) ++selinux_label;
+                                selinux_label += sizeof(PortableMetadataSignatureType);
+
+                                if (signature_type != PORTABLE_METADATA_SIGNATURE_TYPE_NONE) {
+                                        assert(signature_type < _PORTABLE_METADATA_SIGNATURE_TYPE_MAX);
+
+                                        signature_fd = receive_one_fd(seq[0], 0);
+                                        if (signature_fd < 0)
+                                                return log_debug_errno(signature_fd,
+                                                                       "Failed to receive signature fd: %m");
+                                }
+                        } else
+                                selinux_label = NULL;
+
+                        add = portable_metadata_new(iov_buffer, path, selinux_label, signature_type, signature_fd, fd);
                         if (!add)
                                 return -ENOMEM;
                         fd = -EBADF;
+                        signature_fd = -EBADF;
 
                         /* Note that we do not initialize 'add->source' here, as the source path is not usable here as
                          * it refers to a path only valid in the short-living namespaced child process we forked
@@ -791,6 +903,12 @@ static int extract_image_and_extensions(
                                 error);
                 if (r < 0)
                         return r;
+
+                if (!unit_files) {
+                        unit_files = hashmap_new(&portable_metadata_hash_ops);
+                        if (!unit_files)
+                                return -ENOMEM;
+                }
 
                 r = hashmap_move(unit_files, extra_unit_files);
                 if (r < 0)
@@ -1433,7 +1551,7 @@ static int install_chroot_dropin(
                         }
         }
 
-        r = write_string_file(dropin, text, WRITE_STRING_FILE_CREATE|WRITE_STRING_FILE_ATOMIC|WRITE_STRING_FILE_SYNC);
+        r = write_string_file(dropin, text, WRITE_STRING_FILE_CREATE|WRITE_STRING_FILE_ATOMIC|WRITE_STRING_FILE_SYNC|WRITE_STRING_FILE_ENABLE_FS_VERITY);
         if (r < 0)
                 return log_debug_errno(r, "Failed to write '%s': %m", dropin);
 
@@ -1595,7 +1713,9 @@ static int attach_unit_file(
         } else {
                 LinkTmpfileFlags link_flags = LINK_TMPFILE_SYNC;
                 _cleanup_(unlink_and_freep) char *tmp = NULL;
-                _cleanup_close_ int fd = -EBADF;
+                _cleanup_close_ int fd = -EBADF, read_only_fd = -EBADF;
+                _cleanup_free_ void *signature = NULL;
+                size_t signature_size = 0;
 
                 if (flags & PORTABLE_FORCE_ATTACH)
                         link_flags |= LINK_TMPFILE_REPLACE;
@@ -1607,18 +1727,49 @@ static int attach_unit_file(
                 if (fd < 0)
                         return log_debug_errno(fd, "Failed to create unit file '%s': %m", path);
 
-                r = copy_bytes(m->fd, fd, UINT64_MAX, COPY_REFLINK);
+                r = copy_bytes(m->fd, fd, UINT64_MAX, COPY_REFLINK|COPY_FSYNC);
                 if (r < 0)
                         return log_debug_errno(r, "Failed to copy unit file '%s': %m", path);
 
                 if (fchmod(fd, 0644) < 0)
                         return log_debug_errno(errno, "Failed to change unit file access mode for '%s': %m", path);
 
+                if (m->signature_fd >= 0) {
+                        r = read_full_file(FORMAT_PROC_FD_PATH(m->signature_fd), (char **)&signature, &signature_size);
+                        if (r < 0)
+                                return log_debug_errno(r, "Failed to read signature file: %m");
+                }
+
+                if (m->signature_type == PORTABLE_METADATA_SIGNATURE_TYPE_IMA) {
+                        r = xsetxattr(fd, path, "security.ima", signature, signature_size, 0);
+                        if (r < 0 && !ERRNO_IS_NOT_SUPPORTED(r))
+                                log_debug_errno(r, "Failed to set IMA signature on '%s', ignoring: %m", path);
+
+                        signature = mfree(signature);
+                        signature_size = 0;
+                }
+
+                /* fsverity IOCTLs require an exclusive (no other FDs open), read-only, but writable (cannot
+                 * be O_PATH) file descriptor, and fails otherwise. IPE denies opening a file that is not
+                 * signed or alternatively O_TMPFILE/O_PATH/O_DIRECTORY. Solution: write the new file with
+                 * O_TMPFILE, then reopen as O_RDONLY _before_ linking it into place (so that it's still
+                 * O_TMPFILE underneath, which fsverity is ok with), then link it, close the original (so
+                 * that the reopened one is the only one), and finally call the fsverity IOCTL. Easy peasy.
+                 */
+                read_only_fd = fd_reopen(fd, O_RDONLY|O_CLOEXEC|O_NOCTTY);
+                if (read_only_fd < 0)
+                        return read_only_fd;
+
                 r = link_tmpfile(fd, tmp, path, link_flags);
                 if (r < 0)
                         return log_debug_errno(r, "Failed to install unit file '%s': %m", path);
 
                 tmp = mfree(tmp);
+                fd = safe_close(fd);
+
+                r = fsverity_enable(read_only_fd, path, signature, signature_size);
+                if (r < 0 && !ERRNO_IS_NOT_SUPPORTED(r))
+                        log_warning_errno(r, "Failed to enable fs-verity on '%s', ignoring: %m", path);
 
                 (void) portable_changes_add(changes, n_changes, PORTABLE_COPY, path, m->source);
         }
