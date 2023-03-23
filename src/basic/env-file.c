@@ -459,12 +459,27 @@ int load_env_file_pairs(FILE *f, const char *fname, char ***rl) {
         _cleanup_strv_free_ char **m = NULL;
         int r;
 
+        assert(rl);
+
         r = parse_env_file_internal(f, fname, load_env_file_push_pairs, &m);
         if (r < 0)
                 return r;
 
         *rl = TAKE_PTR(m);
         return 0;
+}
+
+int load_env_file_pairs_fd(int fd, const char *fname, char ***ret) {
+        _cleanup_fclose_ FILE *f = NULL;
+        int r;
+
+        assert(fd >= 0);
+
+        r = fdopen_independent(fd, "re", &f);
+        if (r < 0)
+                return r;
+
+        return load_env_file_pairs(f, fname, ret);
 }
 
 static int merge_env_file_push(
