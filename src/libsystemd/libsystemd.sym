@@ -796,3 +796,11 @@ global:
 
         sd_hwdb_new_from_path;
 } LIBSYSTEMD_251;
+
+LIBSYSTEMD_254 {
+global:
+        sd_event_add_memory_pressure;
+        sd_event_source_set_memory_pressure_type;
+        sd_event_source_set_memory_pressure_period;
+        sd_event_trim_memory;
+} LIBSYSTEMD_252;
