@@ -17,6 +17,7 @@
 #include "stat-util.h"
 #include "stdio-util.h"
 #include "string-util.h"
+#include "sync-util.h"
 #include "tmpfile-util.h"
 #include "umask-util.h"
 
@@ -330,34 +331,46 @@ int link_tmpfile(int fd, const char *path, const char *target, LinkTmpfileFlags 
          * an fd created with O_TMPFILE is assumed, and linkat() is used. Otherwise it is assumed O_TMPFILE
          * is not supported on the directory, and renameat2() is used instead. */
 
+        if (FLAGS_SET(flags, LINK_TMPFILE_SYNC) && fsync(fd) < 0)
+                return -errno;
+
         if (path) {
                 if (FLAGS_SET(flags, LINK_TMPFILE_REPLACE))
-                        return RET_NERRNO(rename(path, target));
+                        r = RET_NERRNO(rename(path, target));
+                else
+                        r = rename_noreplace(AT_FDCWD, path, AT_FDCWD, target);
+                if (r < 0)
+                        return r;
+        } else {
 
-                return rename_noreplace(AT_FDCWD, path, AT_FDCWD, target);
+                r = link_fd(fd, AT_FDCWD, target);
+                if (r != -EEXIST || !FLAGS_SET(flags, LINK_TMPFILE_REPLACE))
+                        return r;
+
+                /* So the target already exists and we were asked to replace it. That sucks a bit, since the kernel's
+                 * linkat() logic does not allow that. We work-around this by linking the file to a random name
+                 * first, and then renaming that to the final name. This reintroduces the race O_TMPFILE kinda is
+                 * trying to fix, but at least the vulnerability window (i.e. where the file is linked into the file
+                 * system under a temporary name) is very short. */
+
+                r = tempfn_random(target, NULL, &tmp);
+                if (r < 0)
+                        return r;
+
+                if (link_fd(fd, AT_FDCWD, tmp) < 0)
+                        return -EEXIST; /* propagate original error */
+
+                r = RET_NERRNO(rename(tmp, target));
+                if (r < 0) {
+                        (void) unlink(tmp);
+                        return r;
+                }
         }
 
-        r = link_fd(fd, AT_FDCWD, target);
-        if (r != -EEXIST || !FLAGS_SET(flags, LINK_TMPFILE_REPLACE))
-                return r;
-
-        /* So the target already exists and we were asked to replace it. That sucks a bit, since the kernel's
-         * linkat() logic does not allow that. We work-around this by linking the file to a random name
-         * first, and then renaming that to the final name. This reintroduces the race O_TMPFILE kinda is
-         * trying to fix, but at least the vulnerability window (i.e. where the file is linked into the file
-         * system under a temporary name) is very short. */
-
-        r = tempfn_random(target, NULL, &tmp);
-        if (r < 0)
-                return r;
-
-        if (link_fd(fd, AT_FDCWD, tmp) < 0)
-                return -EEXIST; /* propagate original error */
-
-        r = RET_NERRNO(rename(tmp, target));
-        if (r < 0) {
-                (void) unlink(tmp);
-                return r;
+        if (FLAGS_SET(flags, LINK_TMPFILE_SYNC)) {
+                r = fsync_full(fd);
+                if (r < 0)
+                        return r;
         }
 
         return 0;
@@ -373,7 +386,7 @@ int flink_tmpfile(FILE *f, const char *path, const char *target, LinkTmpfileFlag
         if (fd < 0) /* Not all FILE* objects encapsulate fds */
                 return -EBADF;
 
-        r = fflush_sync_and_check(f);
+        r = fflush_and_check(f);
         if (r < 0)
                 return r;
 
