@@ -891,6 +891,7 @@ const sd_bus_vtable bus_unit_vtable[] = {
         SD_BUS_PROPERTY("AllowIsolate", "b", bus_property_get_bool, offsetof(Unit, allow_isolate), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("DefaultDependencies", "b", bus_property_get_bool, offsetof(Unit, default_dependencies), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("SurviveFinalKillSignal", "b", bus_property_get_bool, offsetof(Unit, survive_final_kill_signal), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("RefreshMountsOnSoftReboot", "b", bus_property_get_bool, offsetof(Unit, refresh_mounts_on_soft_reboot), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("OnSuccesJobMode", "s", property_get_job_mode, offsetof(Unit, on_success_job_mode), SD_BUS_VTABLE_PROPERTY_CONST|SD_BUS_VTABLE_HIDDEN), /* deprecated */
         SD_BUS_PROPERTY("OnSuccessJobMode", "s", property_get_job_mode, offsetof(Unit, on_success_job_mode), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("OnFailureJobMode", "s", property_get_job_mode, offsetof(Unit, on_failure_job_mode), SD_BUS_VTABLE_PROPERTY_CONST),
@@ -2210,6 +2211,9 @@ static int bus_unit_set_transient_property(
 
         if (streq(name, "SurviveFinalKillSignal"))
                 return bus_set_transient_bool(u, name, &u->survive_final_kill_signal, message, flags, error);
+
+        if (streq(name, "RefreshMountsOnSoftReboot"))
+                return bus_set_transient_bool(u, name, &u->refresh_mounts_on_soft_reboot, message, flags, error);
 
         if (streq(name, "OnSuccessJobMode"))
                 return bus_set_transient_job_mode(u, name, &u->on_success_job_mode, message, flags, error);

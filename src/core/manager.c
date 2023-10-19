@@ -1975,6 +1975,131 @@ void manager_reloading_stopp(Manager **m) {
         }
 }
 
+static int manager_update_rootfs_bind_paths(Manager *m) {
+        STRUCT_NEW_STATX_DEFINE(root);
+        STRUCT_NEW_STATX_DEFINE(usr);
+        STRUCT_NEW_STATX_DEFINE(etc);
+        int r;
+
+        assert(m);
+
+        /* For each unit with RefreshMountsOnSoftReboot=yes, if it has a Bind*Paths= sourced from the
+         * rootfs, atomically swap it with the corresponding source from the current (new) rootfs. We
+         * explicitly consider /etc/ and /usr/ too, in case they are separate file systems. */
+
+        r = statx_fallback(
+                        /* dirfd= */ -EBADF,
+                        "/",
+                        /* flags= */ 0,
+                        STATX_TYPE|STATX_INO|STATX_MNT_ID,
+                        &root.sx);
+        if (r < 0)
+                return r;
+
+        r = statx_fallback(
+                        /* dirfd= */ -EBADF,
+                        "/usr/",
+                        /* flags= */ 0,
+                        STATX_TYPE|STATX_INO|STATX_MNT_ID,
+                        &usr.sx);
+        if (r < 0)
+                return r;
+
+        r = statx_fallback(
+                        /* dirfd= */ -EBADF,
+                        "/etc/",
+                        /* flags= */ 0,
+                        STATX_TYPE|STATX_INO|STATX_MNT_ID,
+                        &etc.sx);
+        if (r < 0)
+                return r;
+
+        LIST_FOREACH(units_by_type, u, m->units_by_type[UNIT_SERVICE]) {
+                CGroupRuntime *crt;
+                ExecContext *c;
+
+                if (!u->refresh_mounts_on_soft_reboot)
+                        continue;
+
+                c = unit_get_exec_context(u);
+                if (!c)
+                        continue;
+
+                crt = unit_get_cgroup_runtime(u);
+                if (!crt)
+                        continue;
+
+                if (!exec_needs_mount_namespace(c, NULL, unit_get_exec_runtime(u)))
+                        continue;
+
+                FOREACH_ARRAY(mount, c->bind_mounts, c->n_bind_mounts) {
+                        STRUCT_NEW_STATX_DEFINE(source);
+
+                        r = statx_fallback(
+                                        /* dirfd= */ -EBADF,
+                                        mount->source,
+                                        /* flags= */ 0,
+                                        STATX_TYPE|STATX_INO|STATX_MNT_ID,
+                                        &source.sx);
+                        if (r < 0) {
+                                log_debug_errno(r, "Failed to statx() %s, ignoring: %m", mount->source);
+                                continue;
+                        }
+
+                        if (!statx_mount_same(&root.nsx, &source.nsx)) {
+                                if (startswith(mount->source, "/etc/")) {
+                                        if (!statx_mount_same(&etc.nsx, &source.nsx))
+                                                continue;
+                                } else if (startswith(mount->source, "/usr/")) {
+                                        if (!statx_mount_same(&usr.nsx, &source.nsx))
+                                                continue;
+                                } else
+                                        continue;
+                        }
+
+                        /* The source is on a file system typically updated via soft-reboot, so let's
+                         * refresh it for all processes in the unit */
+
+                        _cleanup_fclose_ FILE *f = NULL;
+                        r = cg_enumerate_processes(SYSTEMD_CGROUP_CONTROLLER, crt->cgroup_path, &f);
+                        if (r < 0)
+                                continue;
+
+                        PidRef unit_pid;
+                        while (cg_read_pidref(f, &unit_pid) > 0) {
+                                _cleanup_free_ char *propagate_dir = NULL;
+
+                                propagate_dir = strjoin("/run/systemd/propagate/", u->id);
+                                if (!propagate_dir)
+                                        return -ENOMEM;
+
+                                r = bind_mount_in_namespace(
+                                                &unit_pid,
+                                                propagate_dir,
+                                                "/run/systemd/incoming/",
+                                                mount->source,
+                                                mount->destination,
+                                                mount->read_only,
+                                                /* make_file_or_directory= */ true);
+                                if (r < 0)
+                                        log_debug_errno(r,
+                                                        "Failed to refresh bind mount %s → %s for '%s', ignoring: %m",
+                                                        mount->source,
+                                                        mount->destination,
+                                                        u->id);
+                                else
+                                        log_debug("Refreshed bind mount %s → %s for '%s'",
+                                                  mount->source,
+                                                  mount->destination,
+                                                  u->id);
+                        }
+
+                }
+        }
+
+        return 0;
+}
+
 int manager_startup(Manager *m, FILE *serialization, FDSet *fds, const char *root) {
         int r;
 
@@ -2078,6 +2203,12 @@ int manager_startup(Manager *m, FILE *serialization, FDSet *fds, const char *roo
                 r = manager_varlink_init(m);
                 if (r < 0)
                         log_warning_errno(r, "Failed to set up Varlink, ignoring: %m");
+
+                if (m->previous_objective == MANAGER_SOFT_REBOOT) {
+                        r = manager_update_rootfs_bind_paths(m);
+                        if (r < 0)
+                                log_debug_errno(r, "Failed to update surviving unit's references to the old root file system, ignoring: %m");
+                }
 
                 /* Third, fire things up! */
                 manager_coldplug(m);

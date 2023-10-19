@@ -80,6 +80,8 @@ elif [ -f /run/testsuite82.touch2 ]; then
     test "$x" = "miep"
     cmp /etc/os-release /run/systemd/propagate/.os-release-stage/os-release
     grep -q MARKER=1 /etc/os-release
+    nsenter -m -t "$(systemctl show --property MainPID --value testsuite-82-survive.service)" cat /tmp/os-release | cmp /usr/lib/os-release -
+    nsenter -m -t "$(systemctl show --property MainPID --value testsuite-82-survive.service)" cat /tmp/os-release | grep -q MARKER=1
 
     # Switch back to the original root, away from the overlayfs
     mount --bind /original-root /run/nextroot
@@ -211,11 +213,14 @@ EOF
         --property "Before=reboot.target kexec.target poweroff.target halt.target emergency.target rescue.target" \
          "$survive_argv"
     systemd-run --service-type=exec --unit=testsuite-82-survive.service \
-        --property TemporaryFileSystem="/run /tmp /var" \
+        --property TemporaryFileSystem="/run /var" \
         --property RootImage=/tmp/minimal_0.raw \
         --property BindReadOnlyPaths=/dev/log \
         --property BindReadOnlyPaths=/run/systemd/journal/socket \
         --property BindReadOnlyPaths=/run/systemd/journal/stdout \
+        --property BindPaths=/usr/lib/os-release:/tmp/os-release \
+        --property PrivateTmp=yes \
+        --property RefreshMountsOnSoftReboot=yes \
         --property SurviveFinalKillSignal=yes \
         --property IgnoreOnIsolate=yes \
         --property DefaultDependencies=no \

@@ -652,6 +652,7 @@ void unit_dump(Unit *u, FILE *f, const char *prefix) {
                         "%s\tRefuseManualStop: %s\n"
                         "%s\tDefaultDependencies: %s\n"
                         "%s\tSurviveFinalKillSignal: %s\n"
+                        "%s\tRefreshMountsOnSoftReboot: %s\n"
                         "%s\tOnSuccessJobMode: %s\n"
                         "%s\tOnFailureJobMode: %s\n"
                         "%s\tIgnoreOnIsolate: %s\n",
@@ -660,6 +661,7 @@ void unit_dump(Unit *u, FILE *f, const char *prefix) {
                         prefix, yes_no(u->refuse_manual_stop),
                         prefix, yes_no(u->default_dependencies),
                         prefix, yes_no(u->survive_final_kill_signal),
+                        prefix, yes_no(u->refresh_mounts_on_soft_reboot),
                         prefix, job_mode_to_string(u->on_success_job_mode),
                         prefix, job_mode_to_string(u->on_failure_job_mode),
                         prefix, yes_no(u->ignore_on_isolate));

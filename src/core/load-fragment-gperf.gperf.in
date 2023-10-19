@@ -318,6 +318,7 @@ Unit.RefuseManualStop,                   config_parse_bool,                     
 Unit.AllowIsolate,                       config_parse_bool,                           0,                                  offsetof(Unit, allow_isolate)
 Unit.DefaultDependencies,                config_parse_bool,                           0,                                  offsetof(Unit, default_dependencies)
 Unit.SurviveFinalKillSignal,             config_parse_bool,                           0,                                  offsetof(Unit, survive_final_kill_signal)
+Unit.RefreshMountsOnSoftReboot,          config_parse_bool,                           0,                                  offsetof(Unit, refresh_mounts_on_soft_reboot)
 Unit.OnSuccessJobMode,                   config_parse_job_mode,                       0,                                  offsetof(Unit, on_success_job_mode)
 Unit.OnFailureJobMode,                   config_parse_job_mode,                       0,                                  offsetof(Unit, on_failure_job_mode)
 {# The following is a legacy alias name for compatibility #}

@@ -216,6 +216,7 @@ BASICTOOLS=(
     nc
     nproc
     ping
+    nsenter
     pkill
     ps
     readlink

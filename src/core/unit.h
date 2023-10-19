@@ -402,6 +402,9 @@ typedef struct Unit {
         /* Configure so that the unit survives a system transition without stopping/starting. */
         bool survive_final_kill_signal;
 
+        /* Configure so that the unit gets its Bind*Paths= refreshed from the new rootfs on soft-reboot */
+        bool refresh_mounts_on_soft_reboot;
+
         /* Refuse manual starting, allow starting only indirectly via dependency. */
         bool refuse_manual_start;
 
