@@ -453,6 +453,9 @@ typedef struct Unit {
         /* Create default dependencies */
         bool default_dependencies;
 
+        /* Create implicit dependencies */
+        bool implicit_dependencies;
+
         /* Configure so that the unit survives a system transition without stopping/starting. */
         bool survive_final_kill_signal;
 

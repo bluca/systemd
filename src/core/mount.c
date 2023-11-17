@@ -306,6 +306,7 @@ static int mount_add_mount_dependencies(Mount *m) {
         pm = get_mount_parameters_fragment(m);
         if (pm && pm->what &&
             path_is_absolute(pm->what) &&
+            UNIT(m)->implicit_dependencies &&
             (mount_is_bind(pm) || mount_is_loop(pm) || !mount_is_network(pm))) {
 
                 r = unit_require_mounts_for(UNIT(m), pm->what, UNIT_DEPENDENCY_FILE);

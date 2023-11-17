@@ -2610,6 +2610,7 @@ static int bus_append_unit_property(sd_bus_message *m, const char *field, const 
                               "AllowIsolate",
                               "IgnoreOnIsolate",
                               "SurviveFinalKillSignal",
+                              "ImplicitDependencies",
                               "DefaultDependencies"))
                 return bus_append_parse_boolean(m, field, eq);
 

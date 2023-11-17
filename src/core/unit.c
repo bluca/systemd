@@ -103,6 +103,7 @@ Unit* unit_new(Manager *m, size_t size) {
         u->manager = m;
         u->type = _UNIT_TYPE_INVALID;
         u->default_dependencies = true;
+        u->implicit_dependencies = true;
         u->unit_file_state = _UNIT_FILE_STATE_INVALID;
         u->unit_file_preset = -1;
         u->on_failure_job_mode = JOB_REPLACE;
@@ -1279,6 +1280,9 @@ int unit_add_exec_dependencies(Unit *u, ExecContext *c) {
         assert(c);
 
         /* Unlike unit_add_dependency() or friends, this always returns 0 on success. */
+
+        if (!u->implicit_dependencies)
+                return 0; /* Nothing to do */
 
         if (c->working_directory && !c->working_directory_missing_ok) {
                 r = unit_require_mounts_for(u, c->working_directory, UNIT_DEPENDENCY_FILE);

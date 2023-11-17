@@ -174,6 +174,9 @@ EOF
     systemd-run --collect --service-type=notify -p DefaultDependencies=no -p IgnoreOnIsolate=yes --unit=testsuite-82-nosurvive-sigterm.service "$survive_sigterm"
     systemd-run --collect --service-type=exec -p DefaultDependencies=no -p IgnoreOnIsolate=yes --unit=testsuite-82-nosurvive.service sleep infinity
 
+    # Ensure that the unit doesn't get deactivated by dependencies on the source file
+    cp /usr/share/minimal_0.raw /tmp/
+
     # Configure these transient units to survive the soft reboot - they will not conflict with shutdown.target
     # and it will be ignored on the isolate that happens in the next boot. The first will use argv[0][0] =
     # '@', and the second will use SurviveFinalKillSignal=yes. Both should survive.
@@ -186,13 +189,19 @@ EOF
         --property "Before=reboot.target kexec.target poweroff.target halt.target emergency.target rescue.target" \
          "$survive_argv"
     systemd-run --service-type=exec --unit=testsuite-82-survive.service \
+        --property TemporaryFileSystem="/run /tmp /var" \
+        --property RootImage=/tmp/minimal_0.raw \
+        --property BindReadOnlyPaths=/dev/log \
+        --property BindReadOnlyPaths=/run/systemd/journal/socket \
+        --property BindReadOnlyPaths=/run/systemd/journal/stdout \
         --property SurviveFinalKillSignal=yes \
         --property IgnoreOnIsolate=yes \
         --property DefaultDependencies=no \
+        --property ImplicitDependencies=no \
         --property After=basic.target \
         --property "Conflicts=reboot.target kexec.target poweroff.target halt.target emergency.target rescue.target" \
         --property "Before=reboot.target kexec.target poweroff.target halt.target emergency.target rescue.target" \
-        sleep infinity
+        /usr/bin/sleep infinity
 
     # Check that we can set up an inhibitor, and that busctl monitor sees the
     # PrepareForShutdownWithMetadata signal and that it says 'soft-reboot'.

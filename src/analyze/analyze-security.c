@@ -43,6 +43,7 @@ typedef struct SecurityInfo {
         char *load_state;
         char *fragment_path;
         bool default_dependencies;
+        bool implicit_dependencies;
 
         uint64_t ambient_capabilities;
         uint64_t capability_bounding_set;
@@ -136,6 +137,7 @@ static SecurityInfo *security_info_new(void) {
 
         *info = (SecurityInfo) {
                 .default_dependencies = true,
+                .implicit_dependencies = true,
                 .capability_bounding_set = UINT64_MAX,
                 .restrict_namespaces = UINT64_MAX,
                 ._umask = 0002,
@@ -2298,6 +2300,7 @@ static int acquire_security_info(sd_bus *bus, const char *name, SecurityInfo *in
                 { "AmbientCapabilities",     "t",       NULL,                                    offsetof(SecurityInfo, ambient_capabilities)      },
                 { "CapabilityBoundingSet",   "t",       NULL,                                    offsetof(SecurityInfo, capability_bounding_set)   },
                 { "DefaultDependencies",     "b",       NULL,                                    offsetof(SecurityInfo, default_dependencies)      },
+                { "ImplicitDependencies",    "b",       NULL,                                    offsetof(SecurityInfo, implicit_dependencies)     },
                 { "Delegate",                "b",       NULL,                                    offsetof(SecurityInfo, delegate)                  },
                 { "DeviceAllow",             "a(ss)",   property_read_device_allow,              0                                                 },
                 { "DevicePolicy",            "s",       NULL,                                    offsetof(SecurityInfo, device_policy)             },
