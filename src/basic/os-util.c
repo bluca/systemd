@@ -158,6 +158,39 @@ int open_os_release(const char *root, char **ret_path, int *ret_fd) {
         return 0;
 }
 
+int match_image_name_to_path(const char *image_name, const char *path) {
+        _cleanup_free_ char *fn = NULL;
+        int r;
+
+        assert(image_name);
+        assert(path);
+
+        /* Extract last component from path, without any "/" suffixes. */
+        r = path_extract_filename(path, &fn);
+        if (IN_SET(r, -EINVAL, -EADDRNOTAVAIL)) /* invalid paths and paths without filenames never match */
+                return false;
+        if (r < 0)
+                return r;
+
+        if (r != O_DIRECTORY) {
+                /* Chop off any image suffixes we recognize (unless we already know this must refer to some dir */
+                FOREACH_STRING(suffix, ".sysext.raw", ".confext.raw", ".raw") {
+                        char *m = endswith(fn, suffix);
+                        if (m) {
+                                *m = 0;
+                                break;
+                        }
+                }
+       }
+
+       /* Now check if what remains starts with the image name */
+       char *v = startswith(fn, image_name);
+       if (!v)
+               return false; /* It does not. No match */
+
+       return IN_SET(*v, 0, '_', '+'); /* Otherwise, it's a match if either there is no suffix or the suffix begins with an underscore, i.e. the name is followed by a version string. Or if the suffix begins with a "+" which means it is a tries counter */
+}
+
 int open_extension_release_at(
                 int rfd,
                 ImageClass image_class,
@@ -230,9 +263,11 @@ int open_extension_release_at(
                         continue;
                 }
 
-                if (!relax_extension_release_check &&
-                    extension_release_strict_xattr_value(fd, dir_path, de->d_name) != 0)
-                        continue;
+                if (!relax_extension_release_check) {
+                        if (match_image_name_to_path(image_name, dir_path) <= 0 &&
+                            extension_release_strict_xattr_value(fd, dir_path, image_name) != 0)
+                                continue;
+                }
 
                 /* We already found what we were looking for, but there's another candidate? We treat this as
                  * an error, as we want to enforce that there are no ambiguities in case we are in the
