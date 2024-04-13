@@ -3,9 +3,29 @@
 set -eux
 set -o pipefail
 
-# Rotation/flush test, see https://github.com/systemd/systemd/issues/19895
-journalctl --relinquish-var
 [[ "$(systemd-detect-virt -v)" == "qemu" ]] && ITERATIONS=10 || ITERATIONS=50
+
+echo MARKER | systemd-cat
+for ((i = 0; i < ITERATIONS; i++)); do
+    dd if=/dev/urandom bs=1M count=1 | base64 | systemd-cat
+done
+
+mkdir -p /run/systemd/
+cat <<EOF >/run/systemd/journald.conf
+[Journal]
+SystemMaxFileSize=1M
+SystemMaxFiles=1
+EOF
+
+systemctl reload systemd-journald.service
+journalctl --rotate
+journalctl --disk-usage | grep -q 'Archived and active journals take up 1.0M in the file system.'
+journalctl -b | grep -v -q MARKER
+
+# Rotation/flush test, see https://github.com/systemd/systemd/issues/19895
+rm -f /run/systemd/journald.conf
+systemctl reload systemd-journald.service
+journalctl --relinquish-var
 for ((i = 0; i < ITERATIONS; i++)); do
     dd if=/dev/urandom bs=1M count=1 | base64 | systemd-cat
 done
