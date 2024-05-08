@@ -1124,6 +1124,14 @@ static int exec_runtime_serialize(const ExecRuntime *rt, FILE *f, FDSet *fds) {
                 if (r < 0)
                         return r;
 
+                r = serialize_fd(f, fds, "exec-runtime-tmp-mount-fd", rt->shared->tmp_mount_fd);
+                if (r < 0)
+                        return r;
+
+                r = serialize_fd(f, fds, "exec-runtime-var-tmp-mount-fd", rt->shared->var_tmp_mount_fd);
+                if (r < 0)
+                        return r;
+
                 if (rt->shared->netns_storage_socket[0] >= 0 && rt->shared->netns_storage_socket[1] >= 0) {
                         r = serialize_fd_many(f, fds, "exec-runtime-netns-storage-socket", rt->shared->netns_storage_socket, 2);
                         if (r < 0)
@@ -1199,6 +1207,23 @@ static int exec_runtime_deserialize(ExecRuntime *rt, FILE *f, FDSet *fds) {
                         r = free_and_strdup(&rt->shared->var_tmp_dir, val);
                         if (r < 0)
                                 return r;
+                } else if ((val = startswith(l, "exec-runtime-tmp-mount-fd="))) {
+                        int fd;
+
+                        fd = deserialize_fd(fds, val);
+                        if (fd < 0)
+                                continue;
+
+                        rt->shared->tmp_mount_fd = fd;
+                } else if ((val = startswith(l, "exec-runtime-var-tmp-mount-fd="))) {
+                        int fd;
+
+                        fd = deserialize_fd(fds, val);
+                        if (fd < 0)
+                                continue;
+
+                        rt->shared->var_tmp_mount_fd = fd;
+
                 } else if ((val = startswith(l, "exec-runtime-netns-storage-socket="))) {
 
                         r = deserialize_fd_many(fds, val, 2, rt->shared->netns_storage_socket);

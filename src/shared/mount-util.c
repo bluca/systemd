@@ -1743,7 +1743,6 @@ int make_fsmount(
         int r;
 
         assert(type);
-        assert(what);
 
         r = mount_option_mangle(options, flags, &f, &o);
         if (r < 0)
@@ -1763,7 +1762,7 @@ int make_fsmount(
         if (fs_fd < 0)
                 return log_full_errno(error_log_level, errno, "Failed to open superblock for \"%s\": %m", type);
 
-        if (fsconfig(fs_fd, FSCONFIG_SET_STRING, "source", what, 0) < 0)
+        if (what && fsconfig(fs_fd, FSCONFIG_SET_STRING, "source", what, 0) < 0)
                 return log_full_errno(error_log_level, errno, "Failed to set mount source for \"%s\" to \"%s\": %m", type, what);
 
         if (FLAGS_SET(f, MS_RDONLY))
@@ -1794,11 +1793,11 @@ int make_fsmount(
         }
 
         if (fsconfig(fs_fd, FSCONFIG_CMD_CREATE, NULL, NULL, 0) < 0)
-                return log_full_errno(error_log_level, errno, "Failed to realize fs fd for \"%s\" (\"%s\"): %m", what, type);
+                return log_full_errno(error_log_level, errno, "Failed to realize fs fd for \"%s\" (\"%s\"): %m", strna(what), type);
 
         mnt_fd = fsmount(fs_fd, FSMOUNT_CLOEXEC, 0);
         if (mnt_fd < 0)
-                return log_full_errno(error_log_level, errno, "Failed to create mount fd for \"%s\" (\"%s\"): %m", what, type);
+                return log_full_errno(error_log_level, errno, "Failed to create mount fd for \"%s\" (\"%s\"): %m", strna(what), type);
 
         if (mount_setattr(mnt_fd, "", AT_EMPTY_PATH|AT_RECURSIVE,
                           &(struct mount_attr) {
@@ -1808,7 +1807,7 @@ int make_fsmount(
                 return log_full_errno(error_log_level,
                                       errno,
                                       "Failed to set mount flags for \"%s\" (\"%s\"): %m",
-                                      what,
+                                      strna(what),
                                       type);
 
         return TAKE_FD(mnt_fd);

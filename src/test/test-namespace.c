@@ -31,7 +31,7 @@ static void test_tmpdir_one(const char *id, const char *A, const char *B) {
         struct stat x, y;
         char *c, *d;
 
-        assert_se(setup_tmp_dirs(id, &a, &b) == 0);
+        assert_se(setup_tmp_dirs(id, &a, &b, NULL, NULL) == 0);
 
         assert_se(stat(a, &x) >= 0);
         assert_se(stat(b, &y) >= 0);

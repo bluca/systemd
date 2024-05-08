@@ -179,6 +179,8 @@ static int run(int argc, char *argv[]) {
         _cleanup_(exec_command_done) ExecCommand command = {};
         _cleanup_(exec_params_deep_clear) ExecParameters params = EXEC_PARAMETERS_INIT(/* flags= */ 0);
         _cleanup_(exec_shared_runtime_done) ExecSharedRuntime shared = {
+                .tmp_mount_fd = -EBADF,
+                .var_tmp_mount_fd = -EBADF,
                 .netns_storage_socket = EBADF_PAIR,
                 .ipcns_storage_socket = EBADF_PAIR,
         };

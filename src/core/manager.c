@@ -2032,6 +2032,66 @@ static int manager_update_rootfs_bind_paths(Manager *m) {
                 if (!exec_needs_mount_namespace(c, NULL, unit_get_exec_runtime(u)))
                         continue;
 
+                ExecRuntime *rt = unit_get_exec_runtime(u);
+                if (c->private_tmp && rt && rt->shared) {
+                        /* The tmp dirs are connected to the host's /tmp/, so that they can be accessed and
+                         * also joined by other services. But /tmp/ is set up from scratch, so the
+                         * connection is lost. Set it up again. */
+                        if (rt->shared->tmp_dir) {
+                                r = mkdir_p_label(rt->shared->tmp_dir, 0700);
+                                if (r < 0)
+                                        log_debug_errno(r, "Failed to create %s, ignoring: %m", rt->shared->tmp_dir);
+                                else {
+                                        _cleanup_free_ char *tmp = strjoin(rt->shared->tmp_dir, "/tmp");
+                                        if (!tmp)
+                                                return -ENOMEM;
+
+                                        r = RET_NERRNO(mkdir(tmp, 0777 | S_ISVTX));
+                                        if (r < 0)
+                                                log_debug_errno(r, "Failed to create %s, ignoring: %m", tmp);
+                                        else if (rt->shared->tmp_mount_fd >= 0) {
+                                                r = RET_NERRNO(move_mount(
+                                                                rt->shared->tmp_mount_fd,
+                                                                /* from_path= */ "",
+                                                                /* to_fd= */ -EBADF,
+                                                                tmp,
+                                                                MOVE_MOUNT_F_EMPTY_PATH));
+                                                if (r < 0)
+                                                        log_debug_errno(r,
+                                                                        "Failed to restore tmpfs on %s, ignoring: %m",
+                                                                        tmp);
+                                        }
+                                }
+                        }
+
+                        if (rt->shared->var_tmp_dir) {
+                                r = mkdir_p_label(rt->shared->var_tmp_dir, 0700);
+                                if (r < 0)
+                                        log_debug_errno(r, "Failed to create %s, ignoring: %m", rt->shared->var_tmp_dir);
+                                else {
+                                        _cleanup_free_ char *tmp = strjoin(rt->shared->var_tmp_dir, "/tmp");
+                                        if (!tmp)
+                                                return -ENOMEM;
+
+                                        r = RET_NERRNO(mkdir(tmp, 0777 | S_ISVTX));
+                                        if (r < 0)
+                                                log_debug_errno(r, "Failed to create %s, ignoring: %m", tmp);
+                                        else if (rt->shared->var_tmp_mount_fd >= 0) {
+                                                r = RET_NERRNO(move_mount(
+                                                                rt->shared->var_tmp_mount_fd,
+                                                                /* from_path= */ "",
+                                                                /* to_fd= */ -EBADF,
+                                                                tmp,
+                                                                MOVE_MOUNT_F_EMPTY_PATH));
+                                                if (r < 0)
+                                                        log_debug_errno(r,
+                                                                        "Failed to restore tmpfs on %s, ignoring: %m",
+                                                                        tmp);
+                                        }
+                                }
+                        }
+                }
+
                 FOREACH_ARRAY(mount, c->bind_mounts, c->n_bind_mounts) {
                         STRUCT_NEW_STATX_DEFINE(source);
 

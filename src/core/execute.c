@@ -5,6 +5,7 @@
 #include <poll.h>
 #include <sys/file.h>
 #include <sys/mman.h>
+#include <sys/mount.h>
 #include <sys/personality.h>
 #include <sys/prctl.h>
 #include <sys/shm.h>
@@ -49,6 +50,7 @@
 #include "missing_fs.h"
 #include "missing_prctl.h"
 #include "mkdir-label.h"
+#include "mount-util.h"
 #include "namespace.h"
 #include "parse-util.h"
 #include "path-util.h"
@@ -2037,6 +2039,8 @@ void exec_shared_runtime_done(ExecSharedRuntime *rt) {
         rt->id = mfree(rt->id);
         rt->tmp_dir = mfree(rt->tmp_dir);
         rt->var_tmp_dir = mfree(rt->var_tmp_dir);
+        rt->tmp_mount_fd =safe_close(rt->tmp_mount_fd);
+        rt->var_tmp_mount_fd = safe_close(rt->var_tmp_mount_fd);
         safe_close_pair(rt->netns_storage_socket);
         safe_close_pair(rt->ipcns_storage_socket);
 }
@@ -2062,6 +2066,16 @@ ExecSharedRuntime* exec_shared_runtime_destroy(ExecSharedRuntime *rt) {
         if (rt->n_ref > 0)
                 return NULL;
 
+        if (rt->tmp_mount_fd >= 0) {
+                char *mnt = strjoina(rt->tmp_dir, "/tmp");
+                (void) umount_verbose(LOG_DEBUG, mnt, UMOUNT_NOFOLLOW|MNT_DETACH);
+        }
+
+        if (rt->var_tmp_mount_fd >= 0) {
+                char *mnt = strjoina(rt->var_tmp_dir, "/tmp");
+                (void) umount_verbose(LOG_DEBUG, mnt, UMOUNT_NOFOLLOW|MNT_DETACH);
+        }
+
         rt->tmp_dir = destroy_tree(rt->tmp_dir);
         rt->var_tmp_dir = destroy_tree(rt->var_tmp_dir);
 
@@ -2084,6 +2098,8 @@ static int exec_shared_runtime_allocate(ExecSharedRuntime **ret, const char *id)
 
         *n = (ExecSharedRuntime) {
                 .id = TAKE_PTR(id_copy),
+                .tmp_mount_fd = -EBADF,
+                .var_tmp_mount_fd = -EBADF,
                 .netns_storage_socket = EBADF_PAIR,
                 .ipcns_storage_socket = EBADF_PAIR,
         };
@@ -2097,6 +2113,8 @@ static int exec_shared_runtime_add(
                 const char *id,
                 char **tmp_dir,
                 char **var_tmp_dir,
+                int *tmp_mount_fd,
+                int *var_tmp_mount_fd,
                 int netns_storage_socket[2],
                 int ipcns_storage_socket[2],
                 ExecSharedRuntime **ret) {
@@ -2107,7 +2125,8 @@ static int exec_shared_runtime_add(
         assert(m);
         assert(id);
 
-        /* tmp_dir, var_tmp_dir, {net,ipc}ns_storage_socket fds are donated on success */
+        /* tmp_dir, var_tmp_dir, tmp_mount_fd, var_tmp_mount_fd, {net,ipc}ns_storage_socket fds are donated
+         * on success */
 
         r = exec_shared_runtime_allocate(&rt, id);
         if (r < 0)
@@ -2131,6 +2150,12 @@ static int exec_shared_runtime_add(
                 rt->ipcns_storage_socket[1] = TAKE_FD(ipcns_storage_socket[1]);
         }
 
+        if (tmp_mount_fd)
+                rt->tmp_mount_fd = TAKE_FD(*tmp_mount_fd);
+
+        if (var_tmp_mount_fd)
+                rt->var_tmp_mount_fd = TAKE_FD(*var_tmp_mount_fd);
+
         rt->manager = m;
 
         if (ret)
@@ -2147,6 +2172,7 @@ static int exec_shared_runtime_make(
                 ExecSharedRuntime **ret) {
 
         _cleanup_(namespace_cleanup_tmpdirp) char *tmp_dir = NULL, *var_tmp_dir = NULL;
+        _cleanup_close_ int tmp_mount_fd = -EBADF, var_tmp_mount_fd = -EBADF;
         _cleanup_close_pair_ int netns_storage_socket[2] = EBADF_PAIR, ipcns_storage_socket[2] = EBADF_PAIR;
         int r;
 
@@ -2164,7 +2190,7 @@ static int exec_shared_runtime_make(
             !(prefixed_path_strv_contains(c->inaccessible_paths, "/tmp") &&
               (prefixed_path_strv_contains(c->inaccessible_paths, "/var/tmp") ||
                prefixed_path_strv_contains(c->inaccessible_paths, "/var")))) {
-                r = setup_tmp_dirs(id, &tmp_dir, &var_tmp_dir);
+                r = setup_tmp_dirs(id, &tmp_dir, &var_tmp_dir, &tmp_mount_fd, &var_tmp_mount_fd);
                 if (r < 0)
                         return r;
         }
@@ -2177,7 +2203,16 @@ static int exec_shared_runtime_make(
                 if (socketpair(AF_UNIX, SOCK_DGRAM|SOCK_CLOEXEC, 0, ipcns_storage_socket) < 0)
                         return -errno;
 
-        r = exec_shared_runtime_add(m, id, &tmp_dir, &var_tmp_dir, netns_storage_socket, ipcns_storage_socket, ret);
+        r = exec_shared_runtime_add(
+                        m,
+                        id,
+                        &tmp_dir,
+                        &var_tmp_dir,
+                        &tmp_mount_fd,
+                        &var_tmp_mount_fd,
+                        netns_storage_socket,
+                        ipcns_storage_socket,
+                        ret);
         if (r < 0)
                 return r;
 
@@ -2234,6 +2269,26 @@ int exec_shared_runtime_serialize(const Manager *m, FILE *f, FDSet *fds) {
 
                 if (rt->var_tmp_dir)
                         fprintf(f, " var-tmp-dir=%s", rt->var_tmp_dir);
+
+                if (rt->tmp_mount_fd >= 0) {
+                        int copy;
+
+                        copy = fdset_put_dup(fds, rt->tmp_mount_fd);
+                        if (copy < 0)
+                                return copy;
+
+                        fprintf(f, " tmp-fd=%i", copy);
+                }
+
+                if (rt->var_tmp_mount_fd >= 0) {
+                        int copy;
+
+                        copy = fdset_put_dup(fds, rt->var_tmp_mount_fd);
+                        if (copy < 0)
+                                return copy;
+
+                        fprintf(f, " var-tmp-fd=%i", copy);
+                }
 
                 if (rt->netns_storage_socket[0] >= 0) {
                         int copy;
@@ -2357,6 +2412,7 @@ int exec_shared_runtime_deserialize_compat(Unit *u, const char *key, const char 
 }
 
 int exec_shared_runtime_deserialize_one(Manager *m, const char *value, FDSet *fds) {
+        _cleanup_close_ int tmp_mount_fd = -EBADF, var_tmp_mount_fd = -EBADF;
         _cleanup_free_ char *tmp_dir = NULL, *var_tmp_dir = NULL;
         char *id = NULL;
         int r, netns_fdpair[] = {-1, -1}, ipcns_fdpair[] = {-1, -1};
@@ -2383,12 +2439,42 @@ int exec_shared_runtime_deserialize_one(Manager *m, const char *value, FDSet *fd
                 p = v + n + 1;
         }
 
+        v = startswith(p, "tmp-fd=");
+        if (v) {
+                char *buf;
+
+                n = strcspn(v, " ");
+                buf = strndupa_safe(v, n);
+
+                tmp_mount_fd = deserialize_fd(fds, buf);
+                if (tmp_mount_fd < 0)
+                        return tmp_mount_fd;
+                if (v[n] != ' ')
+                        goto finalize;
+                p = v + n + 1;
+        }
+
         v = startswith(p, "var-tmp-dir=");
         if (v) {
                 n = strcspn(v, " ");
                 var_tmp_dir = strndup(v, n);
                 if (!var_tmp_dir)
                         return log_oom();
+                if (v[n] != ' ')
+                        goto finalize;
+                p = v + n + 1;
+        }
+
+        v = startswith(p, "var-tmp-fd=");
+        if (v) {
+                char *buf;
+
+                n = strcspn(v, " ");
+                buf = strndupa_safe(v, n);
+
+                var_tmp_mount_fd = deserialize_fd(fds, buf);
+                if (var_tmp_mount_fd < 0)
+                        return var_tmp_mount_fd;
                 if (v[n] != ' ')
                         goto finalize;
                 p = v + n + 1;
@@ -2452,7 +2538,16 @@ int exec_shared_runtime_deserialize_one(Manager *m, const char *value, FDSet *fd
         }
 
 finalize:
-        r = exec_shared_runtime_add(m, id, &tmp_dir, &var_tmp_dir, netns_fdpair, ipcns_fdpair, NULL);
+        r = exec_shared_runtime_add(
+                        m,
+                        id,
+                        &tmp_dir,
+                        &var_tmp_dir,
+                        &tmp_mount_fd,
+                        &var_tmp_mount_fd,
+                        netns_fdpair,
+                        ipcns_fdpair,
+                        NULL);
         if (r < 0)
                 return log_debug_errno(r, "Failed to add exec-runtime: %m");
         return 0;

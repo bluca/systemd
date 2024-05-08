@@ -120,6 +120,11 @@ struct ExecSharedRuntime {
         char *tmp_dir;
         char *var_tmp_dir;
 
+        /* The tmpfs in the private /tmp and /var/tmp are kept around so that they can be mounted where
+         * needed */
+        int tmp_mount_fd;
+        int var_tmp_mount_fd;
+
         /* An AF_UNIX socket pair, that contains a datagram containing a file descriptor referring to the network
          * namespace. */
         int netns_storage_socket[2];

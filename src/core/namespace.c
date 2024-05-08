@@ -101,8 +101,9 @@ typedef struct MountEntry {
         char *path_malloc;        /* Use this instead of 'path_const' if we had to allocate memory */
         const char *unprefixed_path_const; /* If the path was amended with a prefix, these will save the original */
         char *unprefixed_path_malloc;
-        const char *source_const; /* The source path, for bind mounts or images */
+        const char *source_const; /* The source path/fd, for bind mounts or images */
         char *source_malloc;
+        int source_fd_const;
         const char *options_const;/* Mount options for tmpfs */
         char *options_malloc;
         unsigned long flags;      /* Mount flags used by EMPTY_DIR and TMPFS. Do not include MS_RDONLY here, but please use read_only. */
@@ -1642,7 +1643,14 @@ static int apply_one_mount(
 
         case MOUNT_PRIVATE_TMP:
         case MOUNT_PRIVATE_TMP_READ_ONLY:
-                what = mount_entry_source(m);
+                if (m->source_fd_const >= 0) {
+                        // what = FORMAT_PROC_FD_PATH(m->source_fd_const);
+                        r = RET_NERRNO(move_mount(m->source_fd_const, "", -EBADF, mount_entry_path(m), MOVE_MOUNT_F_EMPTY_PATH));
+                        if (r < 0)
+                                return log_debug_errno(r, "Failed to move mount %d to %s: %m", m->source_fd_const, mount_entry_path(m));
+                        return 1;
+                } else
+                        what = mount_entry_source(m);
                 make = true;
                 break;
 
@@ -2245,7 +2253,7 @@ int setup_namespace(const NamespaceParameters *p, char **error_path) {
         if (r < 0)
                 return r;
 
-        if (p->tmp_dir) {
+        if (p->tmp_dir || p->tmp_mount_fd >= 0) {
                 bool ro = streq(p->tmp_dir, RUN_SYSTEMD_EMPTY);
 
                 MountEntry *me = mount_list_extend(&ml);
@@ -2256,10 +2264,11 @@ int setup_namespace(const NamespaceParameters *p, char **error_path) {
                         .path_const = "/tmp",
                         .mode = ro ? MOUNT_PRIVATE_TMP_READ_ONLY : MOUNT_PRIVATE_TMP,
                         .source_const = p->tmp_dir,
+                        .source_fd_const = p->tmp_mount_fd,
                 };
         }
 
-        if (p->var_tmp_dir) {
+        if (p->var_tmp_dir || p->var_tmp_mount_fd >= 0) {
                 bool ro = streq(p->var_tmp_dir, RUN_SYSTEMD_EMPTY);
 
                 MountEntry *me = mount_list_extend(&ml);
@@ -2270,6 +2279,7 @@ int setup_namespace(const NamespaceParameters *p, char **error_path) {
                         .path_const = "/var/tmp",
                         .mode = ro ? MOUNT_PRIVATE_TMP_READ_ONLY : MOUNT_PRIVATE_TMP,
                         .source_const = p->var_tmp_dir,
+                        .source_fd_const = p->var_tmp_mount_fd,
                 };
         }
 
@@ -2825,7 +2835,8 @@ static int make_tmp_prefix(const char *prefix) {
 
 }
 
-static int setup_one_tmp_dir(const char *id, const char *prefix, char **path, char **tmp_path) {
+static int setup_one_tmp_dir(const char *id, const char *prefix, char **path, char **tmp_path, int *ret_mount_fd) {
+        _cleanup_close_ int mount_fd = -EBADF;
         _cleanup_free_ char *x = NULL;
         _cleanup_free_ char *y = NULL;
         sd_id128_t boot_id;
@@ -2842,6 +2853,22 @@ static int setup_one_tmp_dir(const char *id, const char *prefix, char **path, ch
         r = sd_id128_get_boot(&boot_id);
         if (r < 0)
                 return r;
+
+        /* If we have access to the new mount API, then other than the mount point we also open a new tmpfs,
+         * and store its FD for later reuse. */
+        if (ret_mount_fd && mount_new_api_supported()) {
+                mount_fd = make_fsmount(
+                                LOG_DEBUG,
+                                /* what= */ NULL,
+                                "tmpfs",
+                                /* flags= */ 0,
+                                "mode=1777,strictatime,nosuid,nodev",
+                                /* userns_fd */ -EBADF);
+                if (ERRNO_IS_NEG_PRIVILEGE(mount_fd))
+                        mount_fd = -EBADF; /* No permission to create a tmpfs? Fallback to shared dir */
+                else if (mount_fd < 0)
+                        return mount_fd;
+        }
 
         x = strjoin(prefix, "/systemd-private-", SD_ID128_TO_STRING(boot_id), "-", id, "-XXXXXX");
         if (!x)
@@ -2871,9 +2898,6 @@ static int setup_one_tmp_dir(const char *id, const char *prefix, char **path, ch
                 r = label_fix_full(AT_FDCWD, y, prefix, 0);
                 if (r < 0)
                         return r;
-
-                if (tmp_path)
-                        *tmp_path = TAKE_PTR(y);
         } else {
                 /* Trouble: we failed to create the directory. Instead of failing, let's simulate /tmp being
                  * read-only. This way the service will get the EROFS result as if it was writing to the real
@@ -2888,11 +2912,35 @@ static int setup_one_tmp_dir(const char *id, const char *prefix, char **path, ch
                         return r;
         }
 
+        if (mount_fd >= 0) {
+                r = RET_NERRNO(move_mount(
+                                mount_fd,
+                                /* from_path= */ "",
+                                /* to_fd= */ -EBADF,
+                                y ?: x,
+                                MOVE_MOUNT_F_EMPTY_PATH));
+                if (r < 0)
+                        return r;
+
+                *ret_mount_fd = TAKE_FD(mount_fd);
+        }
+
+        if (tmp_path)
+                *tmp_path = TAKE_PTR(y);
+
         *path = TAKE_PTR(x);
+
         return 0;
 }
 
-int setup_tmp_dirs(const char *id, char **tmp_dir, char **var_tmp_dir) {
+int setup_tmp_dirs(
+                const char *id,
+                char **tmp_dir,
+                char **var_tmp_dir,
+                int *ret_tmp_mount_fd,
+                int *ret_var_tmp_mount_fd) {
+
+        _cleanup_close_ int tmp_mount_fd = -EBADF, var_tmp_mount_fd = -EBADF;
         _cleanup_(namespace_cleanup_tmpdirp) char *a = NULL;
         _cleanup_(rmdir_and_freep) char *a_tmp = NULL;
         char *b;
@@ -2901,18 +2949,22 @@ int setup_tmp_dirs(const char *id, char **tmp_dir, char **var_tmp_dir) {
         assert(id);
         assert(tmp_dir);
         assert(var_tmp_dir);
+        assert(ret_tmp_mount_fd);
+        assert(ret_var_tmp_mount_fd);
 
-        r = setup_one_tmp_dir(id, "/tmp", &a, &a_tmp);
+        r = setup_one_tmp_dir(id, "/tmp", &a, &a_tmp, &tmp_mount_fd);
         if (r < 0)
                 return r;
 
-        r = setup_one_tmp_dir(id, "/var/tmp", &b, NULL);
+        r = setup_one_tmp_dir(id, "/var/tmp", &b, NULL, &var_tmp_mount_fd);
         if (r < 0)
                 return r;
 
         a_tmp = mfree(a_tmp); /* avoid rmdir */
         *tmp_dir = TAKE_PTR(a);
         *var_tmp_dir = TAKE_PTR(b);
+        *ret_tmp_mount_fd = TAKE_FD(tmp_mount_fd);
+        *ret_var_tmp_mount_fd = TAKE_FD(var_tmp_mount_fd);
 
         return 0;
 }

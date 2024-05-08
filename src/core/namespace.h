@@ -112,6 +112,8 @@ struct NamespaceParameters {
 
         const char *tmp_dir;
         const char *var_tmp_dir;
+        int tmp_mount_fd;
+        int var_tmp_mount_fd;
 
         const char *creds_path;
         const char *log_namespace;
@@ -167,7 +169,9 @@ DEFINE_TRIVIAL_CLEANUP_FUNC(char*, namespace_cleanup_tmpdir);
 int setup_tmp_dirs(
                 const char *id,
                 char **tmp_dir,
-                char **var_tmp_dir);
+                char **var_tmp_dir,
+                int *ret_tmp_mount_fd,
+                int *ret_var_tmp_mount_fd);
 
 int setup_shareable_ns(int ns_storage_socket[static 2], unsigned long nsflag);
 int open_shareable_ns_path(int netns_storage_socket[static 2], const char *path, unsigned long nsflag);

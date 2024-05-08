@@ -3060,7 +3060,7 @@ static int apply_mount_namespace(
         bool setup_os_release_symlink;
         BindMount *bind_mounts = NULL;
         size_t n_bind_mounts = 0;
-        int r;
+        int r, tmp_mount_fd = -EBADF, var_tmp_mount_fd = -EBADF;
 
         assert(context);
 
@@ -3118,6 +3118,9 @@ static int apply_mount_namespace(
                                 var_tmp_dir = runtime->shared->var_tmp_dir;
                         else if (runtime->shared->var_tmp_dir)
                                 var_tmp_dir = strjoina(runtime->shared->var_tmp_dir, "/tmp");
+
+                        tmp_mount_fd = runtime->shared->tmp_mount_fd;
+                        var_tmp_mount_fd = runtime->shared->var_tmp_mount_fd;
                 }
         }
 
@@ -3211,6 +3214,8 @@ static int apply_mount_namespace(
 
                 .tmp_dir = tmp_dir,
                 .var_tmp_dir = var_tmp_dir,
+                .tmp_mount_fd = tmp_mount_fd,
+                .var_tmp_mount_fd = var_tmp_mount_fd,
 
                 .creds_path = creds_path,
                 .log_namespace = context->log_namespace,
@@ -3535,6 +3540,10 @@ static int close_remaining_fds(
                 append_socket_pair(dont_close, &n_dont_close, runtime->ephemeral_storage_socket);
 
         if (runtime && runtime->shared) {
+                if (runtime->shared->tmp_mount_fd >= 0)
+                        dont_close[n_dont_close++] = runtime->shared->tmp_mount_fd;
+                if (runtime->shared->var_tmp_mount_fd >= 0)
+                        dont_close[n_dont_close++] = runtime->shared->var_tmp_mount_fd;
                 append_socket_pair(dont_close, &n_dont_close, runtime->shared->netns_storage_socket);
                 append_socket_pair(dont_close, &n_dont_close, runtime->shared->ipcns_storage_socket);
         }
@@ -3948,6 +3957,8 @@ static void exec_shared_runtime_close(ExecSharedRuntime *shared) {
         if (!shared)
                 return;
 
+        shared->tmp_mount_fd = safe_close(shared->tmp_mount_fd);
+        shared->var_tmp_mount_fd = safe_close(shared->var_tmp_mount_fd);
         safe_close_pair(shared->netns_storage_socket);
         safe_close_pair(shared->ipcns_storage_socket);
 }
