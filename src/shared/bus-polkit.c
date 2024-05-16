@@ -55,7 +55,7 @@ static int bus_message_new_polkit_auth_call_for_bus(
                 sd_bus_message *m,
                 const char *action,
                 const char **details,
-                bool interactive,
+                PolkitFlags flags,
                 sd_bus_message **ret) {
 
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *c = NULL;
@@ -65,6 +65,7 @@ static int bus_message_new_polkit_auth_call_for_bus(
         assert(m);
         assert(action);
         assert(ret);
+        assert((flags & ~_POLKIT_MASK_PUBLIC) == 0);
 
         sender = sd_bus_message_get_sender(m);
         if (!sender)
@@ -88,7 +89,7 @@ static int bus_message_new_polkit_auth_call_for_bus(
         if (r < 0)
                 return r;
 
-        r = sd_bus_message_append(c, "us", interactive, NULL);
+        r = sd_bus_message_append(c, "us", (uint32_t) flags, NULL);
         if (r < 0)
                 return r;
 
@@ -568,16 +569,14 @@ int bus_verify_polkit_async_full(
         }
 
 #if ENABLE_POLKIT
-        bool interactive = FLAGS_SET(flags, POLKIT_ALLOW_INTERACTIVE);
-
         int c = sd_bus_message_get_allow_interactive_authorization(call);
         if (c < 0)
                 return c;
         if (c > 0)
-                interactive = true;
+                flags |= POLKIT_ALLOW_INTERACTIVE;
 
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *pk = NULL;
-        r = bus_message_new_polkit_auth_call_for_bus(call, action, details, interactive, &pk);
+        r = bus_message_new_polkit_auth_call_for_bus(call, action, details, flags, &pk);
         if (r < 0)
                 return r;
 
@@ -662,7 +661,7 @@ static int bus_message_new_polkit_auth_call_for_varlink(
                 Varlink *link,
                 const char *action,
                 const char **details,
-                bool interactive,
+                PolkitFlags flags,
                 sd_bus_message **ret) {
 
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *c = NULL;
@@ -672,6 +671,7 @@ static int bus_message_new_polkit_auth_call_for_varlink(
         assert(bus);
         assert(link);
         assert(action);
+        assert((flags & ~_POLKIT_MASK_PUBLIC) == 0);
         assert(ret);
 
         r = varlink_get_peer_pidref(link, &pidref);
@@ -709,7 +709,7 @@ static int bus_message_new_polkit_auth_call_for_varlink(
         if (r < 0)
                 return r;
 
-        r = sd_bus_message_append(c, "us", interactive, NULL);
+        r = sd_bus_message_append(c, "us", (uint32_t) flags, NULL);
         if (r < 0)
                 return r;
 
@@ -811,12 +811,11 @@ int varlink_verify_polkit_async_full(
                 bus = mybus;
         }
 
-        bool interactive =
-                FLAGS_SET(flags, POLKIT_ALLOW_INTERACTIVE) ||
-                varlink_allow_interactive_authentication(link);
+        if (varlink_allow_interactive_authentication(link))
+                flags |= POLKIT_ALLOW_INTERACTIVE;
 
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *pk = NULL;
-        r = bus_message_new_polkit_auth_call_for_varlink(bus, link, action, details, interactive, &pk);
+        r = bus_message_new_polkit_auth_call_for_varlink(bus, link, action, details, flags, &pk);
         if (r < 0)
                 return r;
 
