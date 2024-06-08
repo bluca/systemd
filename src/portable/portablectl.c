@@ -728,8 +728,16 @@ static int maybe_stop_enable_restart(sd_bus *bus, sd_bus_message *reply) {
                 if (r == 0)
                         break;
 
-                if (streq(type, "unlink") && is_portable_managed(path))
+                if (streq(type, "unlink") && is_portable_managed(path)) {
+                        _cleanup_free_ char *name = NULL;
+
+                        r = path_extract_filename(path, &name);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to extract file name from '%s': %m", path);
+
+                        (void) maybe_enable_disable(bus, name, /* enable= */ false);
                         (void) maybe_start_stop_restart(bus, path, "StopUnit", wait);
+                }
         }
 
         r = sd_bus_message_exit_container(reply);

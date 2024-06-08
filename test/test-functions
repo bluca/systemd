@@ -762,6 +762,9 @@ install_verity_minimal() {
 [Service]
 ExecStartPre=cat /usr/lib/os-release
 ExecStart=sleep 120
+
+[Install]
+WantedBy=multi-user.target
 EOF
         cp "$initdir/usr/lib/systemd/system/minimal-app0.service" "$initdir/usr/lib/systemd/system/minimal-app0-foo.service"
 
