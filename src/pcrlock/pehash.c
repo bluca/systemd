@@ -53,7 +53,7 @@ int pe_hash(int fd,
             void **ret_hash,
             size_t *ret_hash_size) {
 
-        _cleanup_(EVP_MD_CTX_freep) EVP_MD_CTX *mdctx = NULL;
+        _cleanup_(sym_EVP_MD_CTX_freep) EVP_MD_CTX *mdctx = NULL;
         _cleanup_free_ IMAGE_SECTION_HEADER *sections = NULL;
         _cleanup_free_ IMAGE_DOS_HEADER *dos_header = NULL;
         _cleanup_free_ PeHeader *pe_header = NULL;
@@ -194,7 +194,7 @@ int uki_hash(int fd,
                 return log_debug_errno(SYNTHETIC_ERRNO(ENOTRECOVERABLE), "Failed to get hash size.");
 
         FOREACH_ARRAY(section, sections, pe_header->pe.NumberOfSections) {
-                _cleanup_(EVP_MD_CTX_freep) EVP_MD_CTX *mdctx = NULL;
+                _cleanup_(sym_EVP_MD_CTX_freep) EVP_MD_CTX *mdctx = NULL;
                 _cleanup_free_ char *n = NULL;
                 ssize_t i;
 

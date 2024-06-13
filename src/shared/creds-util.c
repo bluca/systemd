@@ -704,7 +704,7 @@ static int sha256_hash_host_and_tpm2_key(
                 const struct iovec *tpm2_key,
                 uint8_t ret[static SHA256_DIGEST_LENGTH]) {
 
-        _cleanup_(EVP_MD_CTX_freep) EVP_MD_CTX *md = NULL;
+        _cleanup_(sym_EVP_MD_CTX_freep) EVP_MD_CTX *md = NULL;
         unsigned l;
 
         assert(iovec_is_valid(host_key));
@@ -713,17 +713,17 @@ static int sha256_hash_host_and_tpm2_key(
 
         /* Combines the host key and the TPM2 HMAC hash into a SHA256 hash value we'll use as symmetric encryption key. */
 
-        md = EVP_MD_CTX_new();
+        md = sym_EVP_MD_CTX_new();
         if (!md)
                 return log_oom();
 
-        if (EVP_DigestInit_ex(md, EVP_sha256(), NULL) != 1)
+        if (EVP_DigestInit_ex(md, sym_EVP_sha256(), NULL) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to initial SHA256 context.");
 
-        if (iovec_is_set(host_key) && EVP_DigestUpdate(md, host_key->iov_base, host_key->iov_len) != 1)
+        if (iovec_is_set(host_key) && sym_EVP_DigestUpdate(md, host_key->iov_base, host_key->iov_len) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to hash host key.");
 
-        if (iovec_is_set(tpm2_key) && EVP_DigestUpdate(md, tpm2_key->iov_base, tpm2_key->iov_len) != 1)
+        if (iovec_is_set(tpm2_key) && sym_EVP_DigestUpdate(md, tpm2_key->iov_base, tpm2_key->iov_len) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to hash TPM2 key.");
 
         assert(EVP_MD_CTX_size(md) == SHA256_DIGEST_LENGTH);
@@ -745,7 +745,7 @@ static int mangle_uid_into_key(
         assert(uid_is_valid(uid));
         assert(md);
 
-        /* If we shall encrypt for a specific user, we HMAC() a structure with the user's credentials
+        /* If we shall encrypt for a specific user, we sym_HMAC() a structure with the user's credentials
          * (specifically, UID, user name, machine ID) with the key we'd otherwise use for system credentials,
          * and use the resulting hash as actual encryption key. */
 
@@ -803,7 +803,7 @@ int encrypt_credential_and_warn(
 
         _cleanup_(iovec_done) struct iovec tpm2_blob = {}, tpm2_policy_hash = {}, iv = {}, pubkey = {};
         _cleanup_(iovec_done_erase) struct iovec tpm2_key = {}, output = {}, host_key = {};
-        _cleanup_(EVP_CIPHER_CTX_freep) EVP_CIPHER_CTX *context = NULL;
+        _cleanup_(sym_EVP_CIPHER_CTX_freep) EVP_CIPHER_CTX *context = NULL;
         _cleanup_free_ struct metadata_credential_header *m = NULL;
         uint16_t tpm2_pcr_bank = 0, tpm2_primary_alg = 0;
         struct encrypted_credential_header *h;
@@ -1016,16 +1016,16 @@ int encrypt_credential_and_warn(
                         return r;
         }
 
-        assert_se(cc = EVP_aes_256_gcm());
+        assert_se(cc = sym_EVP_aes_256_gcm());
 
-        ksz = EVP_CIPHER_key_length(cc);
+        ksz = sym_EVP_CIPHER_get_key_length(cc);
         assert(ksz == sizeof(md));
 
         bsz = EVP_CIPHER_block_size(cc);
         assert(bsz > 0);
         assert((size_t) bsz <= CREDENTIAL_FIELD_SIZE_MAX);
 
-        ivsz = EVP_CIPHER_iv_length(cc);
+        ivsz = sym_EVP_CIPHER_get_iv_length(cc);
         if (ivsz > 0) {
                 assert((size_t) ivsz <= CREDENTIAL_FIELD_SIZE_MAX);
 
@@ -1042,14 +1042,14 @@ int encrypt_credential_and_warn(
 
         tsz = 16; /* FIXME: On OpenSSL 3 there is EVP_CIPHER_CTX_get_tag_length(), until then let's hardcode this */
 
-        context = EVP_CIPHER_CTX_new();
+        context = sym_EVP_CIPHER_CTX_new();
         if (!context)
                 return log_error_errno(SYNTHETIC_ERRNO(ENOMEM), "Failed to allocate encryption object: %s",
-                                       ERR_error_string(ERR_get_error(), NULL));
+                                       sym_ERR_error_string(ERR_get_error(), NULL));
 
         if (EVP_EncryptInit_ex(context, cc, NULL, md, iv.iov_base) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to initialize encryption context: %s",
-                                       ERR_error_string(ERR_get_error(), NULL));
+                                       sym_ERR_error_string(ERR_get_error(), NULL));
 
         /* Just an upper estimate */
         output.iov_len =
@@ -1113,7 +1113,7 @@ int encrypt_credential_and_warn(
         /* Pass the encrypted + TPM2 header + scoped header as AAD */
         if (EVP_EncryptUpdate(context, NULL, &added, output.iov_base, p) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to write AAD data: %s",
-                                       ERR_error_string(ERR_get_error(), NULL));
+                                       sym_ERR_error_string(ERR_get_error(), NULL));
 
         /* Now construct the metadata header */
         ml = strlen_ptr(name);
@@ -1129,7 +1129,7 @@ int encrypt_credential_and_warn(
         /* And encrypt the metadata header */
         if (EVP_EncryptUpdate(context, (uint8_t*) output.iov_base + p, &added, (const unsigned char*) m, ALIGN8(offsetof(struct metadata_credential_header, name) + ml)) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to encrypt metadata header: %s",
-                                       ERR_error_string(ERR_get_error(), NULL));
+                                       sym_ERR_error_string(ERR_get_error(), NULL));
 
         assert(added >= 0);
         assert((size_t) added <= output.iov_len - p);
@@ -1138,7 +1138,7 @@ int encrypt_credential_and_warn(
         /* Then encrypt the plaintext */
         if (EVP_EncryptUpdate(context, (uint8_t*) output.iov_base + p, &added, input->iov_base, input->iov_len) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to encrypt data: %s",
-                                       ERR_error_string(ERR_get_error(), NULL));
+                                       sym_ERR_error_string(ERR_get_error(), NULL));
 
         assert(added >= 0);
         assert((size_t) added <= output.iov_len - p);
@@ -1147,7 +1147,7 @@ int encrypt_credential_and_warn(
         /* Finalize */
         if (EVP_EncryptFinal_ex(context, (uint8_t*) output.iov_base + p, &added) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to finalize data encryption: %s",
-                                       ERR_error_string(ERR_get_error(), NULL));
+                                       sym_ERR_error_string(ERR_get_error(), NULL));
 
         assert(added >= 0);
         assert((size_t) added <= output.iov_len - p);
@@ -1158,7 +1158,7 @@ int encrypt_credential_and_warn(
         /* Append tag */
         if (EVP_CIPHER_CTX_ctrl(context, EVP_CTRL_GCM_GET_TAG, tsz, (uint8_t*) output.iov_base + p) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to get tag: %s",
-                                       ERR_error_string(ERR_get_error(), NULL));
+                                       sym_ERR_error_string(ERR_get_error(), NULL));
 
         p += tsz;
         assert(p <= output.iov_len);
@@ -1188,7 +1188,7 @@ int decrypt_credential_and_warn(
 
         _cleanup_(iovec_done_erase) struct iovec host_key = {}, plaintext = {}, tpm2_key = {};
         _cleanup_(sd_json_variant_unrefp) sd_json_variant *signature_json = NULL;
-        _cleanup_(EVP_CIPHER_CTX_freep) EVP_CIPHER_CTX *context = NULL;
+        _cleanup_(sym_EVP_CIPHER_CTX_freep) EVP_CIPHER_CTX *context = NULL;
         struct encrypted_credential_header *h;
         struct metadata_credential_header *m;
         uint8_t md[SHA256_DIGEST_LENGTH];
@@ -1390,34 +1390,34 @@ int decrypt_credential_and_warn(
                         return r;
         }
 
-        assert_se(cc = EVP_aes_256_gcm());
+        assert_se(cc = sym_EVP_aes_256_gcm());
 
         /* Make sure cipher expectations match the header */
-        if (EVP_CIPHER_key_length(cc) != (int) le32toh(h->key_size))
+        if (sym_EVP_CIPHER_get_key_length(cc) != (int) le32toh(h->key_size))
                 return log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "Unexpected key size in header.");
         if (EVP_CIPHER_block_size(cc) != (int) le32toh(h->block_size))
                 return log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "Unexpected block size in header.");
 
-        context = EVP_CIPHER_CTX_new();
+        context = sym_EVP_CIPHER_CTX_new();
         if (!context)
                 return log_error_errno(SYNTHETIC_ERRNO(ENOMEM), "Failed to allocate decryption object: %s",
-                                       ERR_error_string(ERR_get_error(), NULL));
+                                       sym_ERR_error_string(ERR_get_error(), NULL));
 
         if (EVP_DecryptInit_ex(context, cc, NULL, NULL, NULL) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to initialize decryption context: %s",
-                                       ERR_error_string(ERR_get_error(), NULL));
+                                       sym_ERR_error_string(ERR_get_error(), NULL));
 
         if (EVP_CIPHER_CTX_ctrl(context, EVP_CTRL_GCM_SET_IVLEN, le32toh(h->iv_size), NULL) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to set IV size on decryption context: %s",
-                                       ERR_error_string(ERR_get_error(), NULL));
+                                       sym_ERR_error_string(ERR_get_error(), NULL));
 
         if (EVP_DecryptInit_ex(context, NULL, NULL, md, h->iv) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to set IV and key: %s",
-                                       ERR_error_string(ERR_get_error(), NULL));
+                                       sym_ERR_error_string(ERR_get_error(), NULL));
 
         if (EVP_DecryptUpdate(context, NULL, &added, input->iov_base, p) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to write AAD data: %s",
-                                       ERR_error_string(ERR_get_error(), NULL));
+                                       sym_ERR_error_string(ERR_get_error(), NULL));
 
         plaintext.iov_base = malloc(input->iov_len - p - le32toh(h->tag_size));
         if (!plaintext.iov_base)
@@ -1430,7 +1430,7 @@ int decrypt_credential_and_warn(
                             (uint8_t*) input->iov_base + p,
                             input->iov_len - p - le32toh(h->tag_size)) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to decrypt data: %s",
-                                       ERR_error_string(ERR_get_error(), NULL));
+                                       sym_ERR_error_string(ERR_get_error(), NULL));
 
         assert(added >= 0);
         assert((size_t) added <= input->iov_len - p - le32toh(h->tag_size));
@@ -1438,11 +1438,11 @@ int decrypt_credential_and_warn(
 
         if (EVP_CIPHER_CTX_ctrl(context, EVP_CTRL_GCM_SET_TAG, le32toh(h->tag_size), (uint8_t*) input->iov_base + input->iov_len - le32toh(h->tag_size)) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to set tag: %s",
-                                       ERR_error_string(ERR_get_error(), NULL));
+                                       sym_ERR_error_string(ERR_get_error(), NULL));
 
         if (EVP_DecryptFinal_ex(context, (uint8_t*) plaintext.iov_base + plaintext.iov_len, &added) != 1)
                 return log_error_errno(SYNTHETIC_ERRNO(EBADMSG), "Decryption failed (incorrect key?): %s",
-                                       ERR_error_string(ERR_get_error(), NULL));
+                                       sym_ERR_error_string(ERR_get_error(), NULL));
 
         plaintext.iov_len += added;
 

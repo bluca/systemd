@@ -1323,7 +1323,7 @@ static int event_log_calculate_pcrs(EventLog *el) {
 
                 for (size_t i = 0; i < el->n_algorithms; i++) {
                         const char *n = tpm2_hash_alg_to_string(el->algorithms[i]);
-                        _cleanup_(EVP_MD_CTX_freep) EVP_MD_CTX *mc = NULL;
+                        _cleanup_(sym_EVP_MD_CTX_freep) EVP_MD_CTX *mc = NULL;
                         EventLogRegisterBank *reg_b;
                         EventLogRecordBank *rec_b;
                         unsigned sz;
@@ -3980,7 +3980,7 @@ static int event_log_component_variant_calculate(
                         continue;
 
                 for (size_t i = 0; i < TPM2_N_HASH_ALGORITHMS; i++) {
-                        _cleanup_(EVP_MD_CTX_freep) EVP_MD_CTX *md_ctx = NULL;
+                        _cleanup_(sym_EVP_MD_CTX_freep) EVP_MD_CTX *md_ctx = NULL;
                         EventLogRecordBank *b;
 
                         if (result->hash[i].size <= 0) /* already invalidated */

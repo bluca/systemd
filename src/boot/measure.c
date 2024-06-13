@@ -392,13 +392,13 @@ static void evp_md_ctx_free_all(EVP_MD_CTX **md[]) {
                 return;
 
         for (size_t i = 0; (*md)[i]; i++)
-                EVP_MD_CTX_free((*md)[i]);
+                sym_EVP_MD_CTX_free((*md)[i]);
 
         *md = mfree(*md);
 }
 
 static int pcr_state_extend(PcrState *pcr_state, const void *data, size_t sz) {
-        _cleanup_(EVP_MD_CTX_freep) EVP_MD_CTX *mc = NULL;
+        _cleanup_(sym_EVP_MD_CTX_freep) EVP_MD_CTX *mc = NULL;
         unsigned value_size;
 
         assert(pcr_state);
@@ -771,8 +771,8 @@ static int verb_calculate(int argc, char *argv[], void *userdata) {
 static int verb_sign(int argc, char *argv[], void *userdata) {
         _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL;
         _cleanup_(pcr_state_free_all) PcrState *pcr_states = NULL;
-        _cleanup_(EVP_PKEY_freep) EVP_PKEY *privkey = NULL, *pubkey = NULL;
-        _cleanup_(X509_freep) X509 *certificate = NULL;
+        _cleanup_(sym_EVP_PKEY_freep) EVP_PKEY *privkey = NULL, *pubkey = NULL;
+        _cleanup_(sym_X509_freep) X509 *certificate = NULL;
         size_t n;
         int r;
 
@@ -802,7 +802,7 @@ static int verb_sign(int argc, char *argv[], void *userdata) {
 
         /* This must be done before openssl_load_key_from_token() otherwise it will get stuck */
         if (arg_certificate) {
-                _cleanup_(BIO_freep) BIO *cb = NULL;
+                _cleanup_(sym_BIO_freep) BIO *cb = NULL;
                 _cleanup_free_ char *crt = NULL;
 
                 r = read_full_file_full(

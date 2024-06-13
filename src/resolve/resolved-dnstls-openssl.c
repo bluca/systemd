@@ -62,8 +62,8 @@ static int dnstls_flush_write_buffer(DnsStream *stream) {
 }
 
 int dnstls_stream_connect_tls(DnsStream *stream, DnsServer *server) {
-        _cleanup_(BIO_freep) BIO *rb = NULL, *wb = NULL;
-        _cleanup_(SSL_freep) SSL *s = NULL;
+        _cleanup_(sym_BIO_freep) BIO *rb = NULL, *wb = NULL;
+        _cleanup_(sym_SSL_freep) SSL *s = NULL;
         int error, r;
 
         assert(stream);
@@ -129,7 +129,7 @@ int dnstls_stream_connect_tls(DnsStream *stream, DnsServer *server) {
 
         r = dnstls_flush_write_buffer(stream);
         if (r < 0 && r != -EAGAIN) {
-                SSL_free(TAKE_PTR(stream->dnstls_data.ssl));
+                sym_SSL_free(TAKE_PTR(stream->dnstls_data.ssl));
                 return r;
         }
 
@@ -141,7 +141,7 @@ void dnstls_stream_free(DnsStream *stream) {
         assert(stream->encrypted);
 
         if (stream->dnstls_data.ssl)
-                SSL_free(stream->dnstls_data.ssl);
+                sym_SSL_free(stream->dnstls_data.ssl);
 }
 
 int dnstls_stream_on_io(DnsStream *stream, uint32_t revents) {

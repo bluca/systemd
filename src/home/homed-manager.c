@@ -1412,7 +1412,7 @@ static int manager_load_key_pair(Manager *m) {
 }
 
 static int manager_generate_key_pair(Manager *m) {
-        _cleanup_(EVP_PKEY_CTX_freep) EVP_PKEY_CTX *ctx = NULL;
+        _cleanup_(sym_EVP_PKEY_CTX_freep) EVP_PKEY_CTX *ctx = NULL;
         _cleanup_(unlink_and_freep) char *temp_public = NULL, *temp_private = NULL;
         _cleanup_fclose_ FILE *fpublic = NULL, *fprivate = NULL;
         int r;
@@ -1523,7 +1523,7 @@ int manager_sign_user_record(Manager *m, UserRecord *u, UserRecord **ret, sd_bus
 DEFINE_PRIVATE_HASH_OPS_FULL(public_key_hash_ops, char, string_hash_func, string_compare_func, free, EVP_PKEY, EVP_PKEY_free);
 
 static int manager_load_public_key_one(Manager *m, const char *path) {
-        _cleanup_(EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
+        _cleanup_(sym_EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
         _cleanup_fclose_ FILE *f = NULL;
         _cleanup_free_ char *fn = NULL;
         struct stat st;

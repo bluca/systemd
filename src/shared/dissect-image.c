@@ -2617,9 +2617,9 @@ static int validate_signature_userspace(const VeritySettings *verity, DissectIma
 #if HAVE_OPENSSL
         _cleanup_(sk_X509_free_allp) STACK_OF(X509) *sk = NULL;
         _cleanup_strv_free_ char **certs = NULL;
-        _cleanup_(PKCS7_freep) PKCS7 *p7 = NULL;
+        _cleanup_(sym_PKCS7_freep) PKCS7 *p7 = NULL;
         _cleanup_free_ char *s = NULL;
-        _cleanup_(BIO_freep) BIO *bio = NULL; /* 'bio' must be freed first, 's' second, hence keep this order
+        _cleanup_(sym_BIO_freep) BIO *bio = NULL; /* 'bio' must be freed first, 's' second, hence keep this order
                                                * of declaration in place, please */
         const unsigned char *d;
 
@@ -2639,7 +2639,7 @@ static int validate_signature_userspace(const VeritySettings *verity, DissectIma
         }
 
         d = verity->root_hash_sig;
-        p7 = d2i_PKCS7(NULL, &d, (long) verity->root_hash_sig_size);
+        p7 = sym_d2i_PKCS7(NULL, &d, (long) verity->root_hash_sig_size);
         if (!p7)
                 return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to parse PKCS7 DER signature data.");
 
@@ -2647,7 +2647,7 @@ static int validate_signature_userspace(const VeritySettings *verity, DissectIma
         if (!s)
                 return log_oom_debug();
 
-        bio = BIO_new_mem_buf(s, strlen(s));
+        bio = sym_BIO_new_mem_buf(s, strlen(s));
         if (!bio)
                 return log_oom_debug();
 
@@ -2656,7 +2656,7 @@ static int validate_signature_userspace(const VeritySettings *verity, DissectIma
                 return log_oom_debug();
 
         STRV_FOREACH(i, certs) {
-                _cleanup_(X509_freep) X509 *c = NULL;
+                _cleanup_(sym_X509_freep) X509 *c = NULL;
                 _cleanup_fclose_ FILE *f = NULL;
 
                 f = fopen(*i, "re");
@@ -2665,7 +2665,7 @@ static int validate_signature_userspace(const VeritySettings *verity, DissectIma
                         continue;
                 }
 
-                c = PEM_read_X509(f, NULL, NULL, NULL);
+                c = sym_PEM_read_X509(f, NULL, NULL, NULL);
                 if (!c) {
                         log_debug("Failed to load X509 certificate '%s', ignoring.", *i);
                         continue;
@@ -2677,11 +2677,11 @@ static int validate_signature_userspace(const VeritySettings *verity, DissectIma
                 TAKE_PTR(c);
         }
 
-        r = PKCS7_verify(p7, sk, NULL, bio, NULL, PKCS7_NOINTERN|PKCS7_NOVERIFY);
+        r = sym_PKCS7_verify(p7, sk, NULL, bio, NULL, PKCS7_NOINTERN|PKCS7_NOVERIFY);
         if (r)
                 log_debug("Userspace PKCS#7 validation succeeded.");
         else
-                log_debug("Userspace PKCS#7 validation failed: %s", ERR_error_string(ERR_get_error(), NULL));
+                log_debug("Userspace PKCS#7 validation failed: %s", sym_ERR_error_string(ERR_get_error(), NULL));
 
         return r;
 #else

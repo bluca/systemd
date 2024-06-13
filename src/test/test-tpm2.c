@@ -771,10 +771,10 @@ TEST(tpm2b_public_to_openssl_pkey) {
 
         /* RSA */
         tpm2b_public_rsa_init(&public, "d71cff5bba2173f0434a389171048e7da8cf8409b892c62946481cc383089bc754324620967fea3d00a02a717cdda4bfe1525ad957d294b88434e0a3933e86fb40f234e4935fd2ba27eb1d21da87efa466b74eb4ad18d26059904643441cf402ee933d138a2151f40459c49d87fef59e2cb822768b2d8689a9b58f82bf9a37e70693f2b2d40dfa388d365c1b1f029a14c4fc8dadb68978ef377d20ff2ca24e7078464c705eab42f531557c9c6dc0df66b506d0c26ef604f8110c64867099267453c71871e7ed22505a09daf102afc34355209ca7680eccc0ed368d148f402fa58cbb6c9d52351f535f09e4e24ad805e149f130edaa2f5e7efed3a4d2d03adb85");
-        _cleanup_(EVP_PKEY_freep) EVP_PKEY *pkey_rsa = NULL;
+        _cleanup_(sym_EVP_PKEY_freep) EVP_PKEY *pkey_rsa = NULL;
         assert_se(tpm2_tpm2b_public_to_openssl_pkey(&public, &pkey_rsa) >= 0);
 
-        _cleanup_(EVP_PKEY_CTX_freep) EVP_PKEY_CTX *ctx_rsa = EVP_PKEY_CTX_new((EVP_PKEY*) pkey_rsa, NULL);
+        _cleanup_(sym_EVP_PKEY_CTX_freep) EVP_PKEY_CTX *ctx_rsa = EVP_PKEY_CTX_new((EVP_PKEY*) pkey_rsa, NULL);
         assert_se(ctx_rsa);
         assert_se(EVP_PKEY_verify_init(ctx_rsa) == 1);
         assert_se(EVP_PKEY_CTX_set_signature_md(ctx_rsa, EVP_sha256()) > 0);
@@ -784,10 +784,10 @@ TEST(tpm2b_public_to_openssl_pkey) {
 
         /* ECC */
         tpm2b_public_ecc_init(&public, TPM2_ECC_NIST_P256, "6fc0ecf3645c673ab7e86d1ec5b315afb950257c5f68ab23296160006711fac2", "8dd2ef7a2c9ecede91493ba98c8fb3f893aff325c6a1e0f752c657b2d6ca1413");
-        _cleanup_(EVP_PKEY_freep) EVP_PKEY *pkey_ecc = NULL;
+        _cleanup_(sym_EVP_PKEY_freep) EVP_PKEY *pkey_ecc = NULL;
         assert_se(tpm2_tpm2b_public_to_openssl_pkey(&public, &pkey_ecc) >= 0);
 
-        _cleanup_(EVP_PKEY_CTX_freep) EVP_PKEY_CTX *ctx_ecc = EVP_PKEY_CTX_new((EVP_PKEY*) pkey_ecc, NULL);
+        _cleanup_(sym_EVP_PKEY_CTX_freep) EVP_PKEY_CTX *ctx_ecc = EVP_PKEY_CTX_new((EVP_PKEY*) pkey_ecc, NULL);
         assert_se(ctx_ecc);
         assert_se(EVP_PKEY_verify_init(ctx_ecc) == 1);
 
@@ -796,7 +796,7 @@ TEST(tpm2b_public_to_openssl_pkey) {
 }
 
 static void get_tpm2b_public_from_pem(const void *pem, size_t pem_size, TPM2B_PUBLIC *ret) {
-        _cleanup_(EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
+        _cleanup_(sym_EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
         TPM2B_PUBLIC p1 = {}, p2 = {};
 
         assert(pem);

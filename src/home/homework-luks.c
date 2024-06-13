@@ -827,7 +827,7 @@ static int luks_validate_home_record(
 
         for (int token = 0; token < sym_crypt_token_max(CRYPT_LUKS2); token++) {
                 _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL, *rr = NULL;
-                _cleanup_(EVP_CIPHER_CTX_freep) EVP_CIPHER_CTX *context = NULL;
+                _cleanup_(sym_EVP_CIPHER_CTX_freep) EVP_CIPHER_CTX *context = NULL;
                 _cleanup_(user_record_unrefp) UserRecord *lhr = NULL;
                 _cleanup_free_ void *encrypted = NULL, *iv = NULL;
                 size_t decrypted_size, encrypted_size, iv_size;
@@ -886,7 +886,7 @@ static int luks_validate_home_record(
                 if (EVP_DecryptInit_ex(context, cc, NULL, volume_key, iv) != 1)
                         return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "Failed to initialize decryption context.");
 
-                decrypted_size = encrypted_size + EVP_CIPHER_key_length(cc) * 2;
+                decrypted_size = encrypted_size + sym_EVP_CIPHER_get_key_length(cc) * 2;
                 decrypted = new(char, decrypted_size);
                 if (!decrypted)
                         return log_oom();
@@ -941,7 +941,7 @@ static int format_luks_token_text(
                 char **ret) {
 
         int r, encrypted_size_out1 = 0, encrypted_size_out2 = 0, iv_size, key_size;
-        _cleanup_(EVP_CIPHER_CTX_freep) EVP_CIPHER_CTX *context = NULL;
+        _cleanup_(sym_EVP_CIPHER_CTX_freep) EVP_CIPHER_CTX *context = NULL;
         _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL;
         _cleanup_free_ void *iv = NULL, *encrypted = NULL;
         size_t text_length, encrypted_size;

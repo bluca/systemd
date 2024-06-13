@@ -188,7 +188,7 @@ static int fscrypt_slot_try_one(
                 void **ret_decrypted, size_t *ret_decrypted_size) {
 
 
-        _cleanup_(EVP_CIPHER_CTX_freep) EVP_CIPHER_CTX *context = NULL;
+        _cleanup_(sym_EVP_CIPHER_CTX_freep) EVP_CIPHER_CTX *context = NULL;
         _cleanup_(erase_and_freep) void *decrypted = NULL;
         uint8_t key_descriptor[FS_KEY_DESCRIPTOR_SIZE];
         int decrypted_size_out1, decrypted_size_out2;
@@ -469,7 +469,7 @@ static int fscrypt_slot_set(
 
         _cleanup_free_ char *salt_base64 = NULL, *encrypted_base64 = NULL, *joined = NULL;
         char label[STRLEN("trusted.fscrypt_slot") + DECIMAL_STR_MAX(nr) + 1];
-        _cleanup_(EVP_CIPHER_CTX_freep) EVP_CIPHER_CTX *context = NULL;
+        _cleanup_(sym_EVP_CIPHER_CTX_freep) EVP_CIPHER_CTX *context = NULL;
         int r, encrypted_size_out1, encrypted_size_out2;
         uint8_t salt[64], derived[512 / 8] = {};
         _cleanup_free_ void *encrypted = NULL;

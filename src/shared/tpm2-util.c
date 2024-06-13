@@ -2969,7 +2969,7 @@ int tpm2_get_good_pcr_banks_strv(
                 if (!salg)
                         return log_debug_errno(SYNTHETIC_ERRNO(ENOTRECOVERABLE), "TPM2 operates with unknown PCR algorithm, can't measure.");
 
-                implementation = EVP_get_digestbyname(salg);
+                implementation = sym_EVP_get_digestbyname(salg);
                 if (!implementation)
                         return log_debug_errno(SYNTHETIC_ERRNO(ENOTRECOVERABLE), "TPM2 operates with unsupported PCR algorithm, can't measure.");
 
@@ -4410,7 +4410,7 @@ int tpm2_tpm2b_public_from_openssl_pkey(const EVP_PKEY *pkey, TPM2B_PUBLIC *ret)
         };
 
 #if OPENSSL_VERSION_MAJOR >= 3
-        key_id = EVP_PKEY_get_id(pkey);
+        key_id = sym_EVP_PKEY_get_id(pkey);
 #else
         key_id = EVP_PKEY_id(pkey);
 #endif
@@ -4507,13 +4507,13 @@ int tpm2_tpm2b_public_to_fingerprint(
         assert(ret_fingerprint);
         assert(ret_fingerprint_size);
 
-        _cleanup_(EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
+        _cleanup_(sym_EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
         r = tpm2_tpm2b_public_to_openssl_pkey(public, &pkey);
         if (r < 0)
                 return r;
 
         /* Hardcode fingerprint to SHA256 */
-        return pubkey_fingerprint(pkey, EVP_sha256(), ret_fingerprint, ret_fingerprint_size);
+        return pubkey_fingerprint(pkey, sym_EVP_sha256(), ret_fingerprint, ret_fingerprint_size);
 #else
         return log_debug_errno(SYNTHETIC_ERRNO(EOPNOTSUPP), "OpenSSL support is disabled.");
 #endif
@@ -4526,7 +4526,7 @@ int tpm2_tpm2b_public_from_pem(const void *pem, size_t pem_size, TPM2B_PUBLIC *r
         assert(pem);
         assert(ret);
 
-        _cleanup_(EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
+        _cleanup_(sym_EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
         r = openssl_pkey_from_pem(pem, pem_size, &pkey);
         if (r < 0)
                 return r;
@@ -5085,7 +5085,7 @@ static int tpm2_calculate_seal_rsa_seed(
 
         log_debug("Calculating encrypted seed for RSA sealed object.");
 
-        _cleanup_(EVP_PKEY_freep) EVP_PKEY *parent_pkey = NULL;
+        _cleanup_(sym_EVP_PKEY_freep) EVP_PKEY *parent_pkey = NULL;
         r = tpm2_tpm2b_public_to_openssl_pkey(parent, &parent_pkey);
         if (r < 0)
                 return log_debug_errno(r, "Could not convert TPM2B_PUBLIC to OpenSSL PKEY: %m");
@@ -5147,7 +5147,7 @@ static int tpm2_calculate_seal_ecc_seed(
 
         log_debug("Calculating encrypted seed for ECC sealed object.");
 
-        _cleanup_(EVP_PKEY_freep) EVP_PKEY *parent_pkey = NULL;
+        _cleanup_(sym_EVP_PKEY_freep) EVP_PKEY *parent_pkey = NULL;
         r = tpm2_tpm2b_public_to_openssl_pkey(parent, &parent_pkey);
         if (r < 0)
                 return log_debug_errno(r, "Could not convert TPM2B_PUBLIC to OpenSSL PKEY: %m");
@@ -5161,7 +5161,7 @@ static int tpm2_calculate_seal_ecc_seed(
         if (r < 0)
                 return r;
 
-        _cleanup_(EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
+        _cleanup_(sym_EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
         r = ecc_pkey_new(curve_id, &pkey);
         if (r < 0)
                 return r;
@@ -6324,7 +6324,7 @@ static int tpm2_userspace_log(
                 const char *a;
 
                 assert_se(a = tpm2_hash_alg_to_string(values->digests[i].hashAlg));
-                assert_se(implementation = EVP_get_digestbyname(a));
+                assert_se(implementation = sym_EVP_get_digestbyname(a));
 
                 r = sd_json_variant_append_arrayb(
                                 &array, SD_JSON_BUILD_OBJECT(
@@ -6413,7 +6413,7 @@ int tpm2_extend_bytes(
                 const EVP_MD *implementation;
                 int id;
 
-                assert_se(implementation = EVP_get_digestbyname(*bank));
+                assert_se(implementation = sym_EVP_get_digestbyname(*bank));
 
                 if (values.count >= ELEMENTSOF(values.digests))
                         return log_debug_errno(SYNTHETIC_ERRNO(E2BIG), "Too many banks selected.");

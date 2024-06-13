@@ -148,7 +148,7 @@ int identity_add_pkcs11_key_data(sd_json_variant **v, const char *uri) {
         _cleanup_(erase_and_freep) void *decrypted_key = NULL, *saved_key = NULL;
         _cleanup_(erase_and_freep) char *pin = NULL;
         size_t decrypted_key_size, saved_key_size;
-        _cleanup_(EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
+        _cleanup_(sym_EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
         int r;
 
         assert(v);

@@ -113,7 +113,7 @@ int user_record_verify(UserRecord *ur, EVP_PKEY *public_key) {
                 return r;
 
         JSON_VARIANT_ARRAY_FOREACH(e, array) {
-                _cleanup_(EVP_MD_CTX_freep) EVP_MD_CTX *md_ctx = NULL;
+                _cleanup_(sym_EVP_MD_CTX_freep) EVP_MD_CTX *md_ctx = NULL;
                 _cleanup_free_ void *signature = NULL;
                 size_t signature_size = 0;
                 sd_json_variant *data;

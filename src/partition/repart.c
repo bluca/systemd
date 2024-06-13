@@ -179,9 +179,9 @@ STATIC_DESTRUCTOR_REGISTER(arg_root, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_image, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_definitions, strv_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_key, erase_and_freep);
-STATIC_DESTRUCTOR_REGISTER(arg_private_key, EVP_PKEY_freep);
+STATIC_DESTRUCTOR_REGISTER(arg_private_key, sym_EVP_PKEY_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_private_key_source, freep);
-STATIC_DESTRUCTOR_REGISTER(arg_certificate, X509_freep);
+STATIC_DESTRUCTOR_REGISTER(arg_certificate, sym_X509_freep);
 STATIC_DESTRUCTOR_REGISTER(arg_tpm2_device, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_tpm2_device_key, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_tpm2_hash_pcr_values, freep);
@@ -4397,8 +4397,8 @@ static int sign_verity_roothash(
                 struct iovec *ret_signature) {
 
 #if HAVE_OPENSSL
-        _cleanup_(BIO_freep) BIO *rb = NULL;
-        _cleanup_(PKCS7_freep) PKCS7 *p7 = NULL;
+        _cleanup_(sym_BIO_freep) BIO *rb = NULL;
+        _cleanup_(sym_PKCS7_freep) PKCS7 *p7 = NULL;
         _cleanup_free_ char *hex = NULL;
         _cleanup_free_ uint8_t *sig = NULL;
         int sigsz;
@@ -5214,8 +5214,8 @@ static int context_mkfs(Context *context) {
 
 static int parse_x509_certificate(const char *certificate, size_t certificate_size, X509 **ret) {
 #if HAVE_OPENSSL
-        _cleanup_(X509_freep) X509 *cert = NULL;
-        _cleanup_(BIO_freep) BIO *cb = NULL;
+        _cleanup_(sym_X509_freep) X509 *cert = NULL;
+        _cleanup_(sym_BIO_freep) BIO *cb = NULL;
 
         assert(certificate);
         assert(certificate_size > 0);
@@ -5241,8 +5241,8 @@ static int parse_x509_certificate(const char *certificate, size_t certificate_si
 
 static int parse_private_key(const char *key, size_t key_size, EVP_PKEY **ret) {
 #if HAVE_OPENSSL
-        _cleanup_(BIO_freep) BIO *kb = NULL;
-        _cleanup_(EVP_PKEY_freep) EVP_PKEY *pk = NULL;
+        _cleanup_(sym_BIO_freep) BIO *kb = NULL;
+        _cleanup_(sym_EVP_PKEY_freep) EVP_PKEY *pk = NULL;
 
         assert(key);
         assert(key_size > 0);

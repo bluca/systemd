@@ -43,7 +43,7 @@ int enroll_pkcs11(
         _cleanup_free_ char *keyslot_as_string = NULL, *private_uri = NULL;
         size_t decrypted_key_size, saved_key_size;
         _cleanup_free_ void *saved_key = NULL;
-        _cleanup_(EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
+        _cleanup_(sym_EVP_PKEY_freep) EVP_PKEY *pkey = NULL;
         ssize_t base64_encoded_size;
         const char *node;
         int r;

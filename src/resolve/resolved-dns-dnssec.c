@@ -14,14 +14,6 @@
 #include "sort-util.h"
 #include "string-table.h"
 
-#if PREFER_OPENSSL && OPENSSL_VERSION_MAJOR >= 3
-#  pragma GCC diagnostic push
-#    pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-DEFINE_TRIVIAL_CLEANUP_FUNC_FULL(RSA*, RSA_free, NULL);
-DEFINE_TRIVIAL_CLEANUP_FUNC_FULL(EC_KEY*, EC_KEY_free, NULL);
-#  pragma GCC diagnostic pop
-#endif
-
 #define VERIFY_RRS_MAX 256
 #define MAX_KEY_SIZE (32*1024)
 
@@ -103,10 +95,10 @@ static int dnssec_rsa_verify_raw(
 #if PREFER_OPENSSL
 #  pragma GCC diagnostic push
 #    pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-        _cleanup_(RSA_freep) RSA *rpubkey = NULL;
-        _cleanup_(EVP_PKEY_freep) EVP_PKEY *epubkey = NULL;
-        _cleanup_(EVP_PKEY_CTX_freep) EVP_PKEY_CTX *ctx = NULL;
-        _cleanup_(BN_freep) BIGNUM *e = NULL, *m = NULL;
+        _cleanup_(sym_RSA_freep) RSA *rpubkey = NULL;
+        _cleanup_(sym_EVP_PKEY_freep) EVP_PKEY *epubkey = NULL;
+        _cleanup_(sym_EVP_PKEY_CTX_freep) EVP_PKEY_CTX *ctx = NULL;
+        _cleanup_(sym_BN_freep) BIGNUM *e = NULL, *m = NULL;
 
         assert(hash_algorithm);
 
@@ -305,12 +297,12 @@ static int dnssec_ecdsa_verify_raw(
 #if PREFER_OPENSSL
 #  pragma GCC diagnostic push
 #    pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-        _cleanup_(EC_GROUP_freep) EC_GROUP *ec_group = NULL;
-        _cleanup_(EC_POINT_freep) EC_POINT *p = NULL;
-        _cleanup_(EC_KEY_freep) EC_KEY *eckey = NULL;
-        _cleanup_(BN_CTX_freep) BN_CTX *bctx = NULL;
-        _cleanup_(BN_freep) BIGNUM *r = NULL, *s = NULL;
-        _cleanup_(ECDSA_SIG_freep) ECDSA_SIG *sig = NULL;
+        _cleanup_(sym_EC_GROUP_freep) EC_GROUP *ec_group = NULL;
+        _cleanup_(sym_EC_POINT_freep) EC_POINT *p = NULL;
+        _cleanup_(sym_EC_KEY_freep) EC_KEY *eckey = NULL;
+        _cleanup_(sym_BN_CTX_freep) BN_CTX *bctx = NULL;
+        _cleanup_(sym_BN_freep) BIGNUM *r = NULL, *s = NULL;
+        _cleanup_(sym_ECDSA_SIG_freep) ECDSA_SIG *sig = NULL;
 
         assert(hash_algorithm);
 
@@ -499,9 +491,9 @@ static int dnssec_eddsa_verify_raw(
                 const uint8_t *key, size_t key_size) {
 
 #if PREFER_OPENSSL
-        _cleanup_(EVP_PKEY_freep) EVP_PKEY *evkey = NULL;
-        _cleanup_(EVP_PKEY_CTX_freep) EVP_PKEY_CTX *pctx = NULL;
-        _cleanup_(EVP_MD_CTX_freep) EVP_MD_CTX *ctx = NULL;
+        _cleanup_(sym_EVP_PKEY_freep) EVP_PKEY *evkey = NULL;
+        _cleanup_(sym_EVP_PKEY_CTX_freep) EVP_PKEY_CTX *pctx = NULL;
+        _cleanup_(sym_EVP_MD_CTX_freep) EVP_MD_CTX *ctx = NULL;
         int r;
 
         assert(curve == NID_ED25519);
@@ -915,7 +907,7 @@ static int dnssec_rrset_verify_sig(
                 if (!md_algorithm)
                         return -EOPNOTSUPP;
 
-                _cleanup_(EVP_MD_CTX_freep) EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+                _cleanup_(sym_EVP_MD_CTX_freep) EVP_MD_CTX *ctx = EVP_MD_CTX_new();
                 if (!ctx)
                         return -ENOMEM;
 
@@ -1372,7 +1364,7 @@ int dnssec_verify_dnskey_by_ds(DnsResourceRecord *dnskey, DnsResourceRecord *ds,
         if (!md_algorithm)
                 return -EOPNOTSUPP;
 
-        _cleanup_(EVP_MD_CTX_freep) EVP_MD_CTX *ctx = NULL;
+        _cleanup_(sym_EVP_MD_CTX_freep) EVP_MD_CTX *ctx = NULL;
         uint8_t result[EVP_MAX_MD_SIZE];
 
         unsigned hash_size = EVP_MD_size(md_algorithm);
@@ -1524,7 +1516,7 @@ int dnssec_nsec3_hash(DnsResourceRecord *nsec3, const char *name, void *ret) {
         if (nsec3->nsec3.next_hashed_name_size != hash_size)
                 return -EINVAL;
 
-        _cleanup_(EVP_MD_CTX_freep) EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+        _cleanup_(sym_EVP_MD_CTX_freep) EVP_MD_CTX *ctx = EVP_MD_CTX_new();
         if (!ctx)
                 return -ENOMEM;
 
