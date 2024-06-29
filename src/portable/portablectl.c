@@ -55,7 +55,7 @@ static bool arg_clean = false;
 STATIC_DESTRUCTOR_REGISTER(arg_extension_images, strv_freep);
 
 static bool is_portable_managed(const char *unit) {
-        return ENDSWITH_SET(unit, ".service", ".target", ".socket", ".path", ".timer");
+        return ENDSWITH_SET(unit, ".service", ".target", ".socket", ".path", ".timer") && strstr(unit, "/systemd/system.attached/");
 }
 
 static int determine_image(const char *image, bool permit_non_existing, char **ret) {
