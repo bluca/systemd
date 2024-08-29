@@ -726,8 +726,41 @@ static int method_start_unit_generic(sd_bus_message *message, Manager *m, JobTyp
         return bus_unit_method_start_generic(message, u, job_type, reload_if_possible, error);
 }
 
+static int method_start_units_generic(sd_bus_message *message, Manager *m, JobType job_type, bool reload_if_possible, sd_bus_error *error) {
+        _cleanup_strv_free_ char **names = NULL;
+        int r;
+
+        assert(message);
+        assert(m);
+
+        r = sd_bus_message_read_strv(message, &names);
+        if (r < 0)
+                return r;
+
+        // WIP: original method below, needs rewrite to "vectorized" form
+        //      will require more changes in passing arrays instead of units (similar to anchor jobs)
+
+        STRV_FOREACH(name, names) {
+                Unit *u;
+
+                r = manager_load_unit(m, *name, NULL, error, &u);
+                if (r < 0)
+                        return r;
+
+                r = bus_unit_method_start_generic(message, u, job_type, reload_if_possible, error);
+                if (r < 0)
+                        return r;
+        }
+
+        return 1;
+}
+
 static int method_start_unit(sd_bus_message *message, void *userdata, sd_bus_error *error) {
         return method_start_unit_generic(message, userdata, JOB_START, /* reload_if_possible = */ false, error);
+}
+
+static int method_start_units(sd_bus_message *message, void *userdata, sd_bus_error *error) {
+        return method_start_units_generic(message, userdata, JOB_START, false, error);
 }
 
 static int method_stop_unit(sd_bus_message *message, void *userdata, sd_bus_error *error) {
@@ -3221,6 +3254,11 @@ const sd_bus_vtable bus_manager_vtable[] = {
                                 SD_BUS_ARGS("s", name, "s", mode, "t", flags),
                                 SD_BUS_RESULT("o", job),
                                 method_start_unit,
+                                SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_ARGS("StartUnits",
+                                SD_BUS_ARGS("as", units, "s", mode, "t", flags),
+                                SD_BUS_RESULT("o", job),
+                                method_start_units,
                                 SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD_WITH_ARGS("StartUnitReplace",
                                 SD_BUS_ARGS("s", old_unit, "s", new_unit, "s", mode),

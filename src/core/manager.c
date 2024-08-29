@@ -2167,30 +2167,39 @@ int manager_startup(Manager *m, FILE *serialization, FDSet *fds, const char *roo
         return 0;
 }
 
-int manager_add_job_full(
+int manager_add_job_set_full(
                 Manager *m,
                 JobType type,
-                Unit *unit,
+                Set *unit_set,
                 JobMode mode,
                 TransactionAddFlags extra_flags,
                 Set *affected_jobs,
                 sd_bus_error *error,
-                Job **ret) {
+                Set *jobs) {
 
         _cleanup_(transaction_abort_and_freep) Transaction *tr = NULL;
+        Unit *u;
+        Job *j;
+        JobType merged_type;
         int r;
 
         assert(m);
         assert(type >= 0 && type < _JOB_TYPE_MAX);
-        assert(unit);
+        assert(unit_set);
         assert(mode >= 0 && mode < _JOB_MODE_MAX);
         assert((extra_flags & ~_TRANSACTION_FLAGS_MASK_PUBLIC) == 0);
 
         if (mode == JOB_ISOLATE && type != JOB_START)
                 return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "Isolate is only valid for start.");
 
-        if (mode == JOB_ISOLATE && !unit->allow_isolate)
-                return sd_bus_error_set(error, BUS_ERROR_NO_ISOLATION, "Operation refused, unit may not be isolated.");
+        if (mode == JOB_ISOLATE && set_size(unit_set) > 1)
+                return sd_bus_error_setf(error, SD_BUS_ERROR_NOT_SUPPORTED, "Isolating more than one unit is not supported.");
+
+        if (mode == JOB_ISOLATE)
+                SET_FOREACH(u, unit_set) {
+                        if (!u->allow_isolate)
+                                return sd_bus_error_setf(error, BUS_ERROR_NO_ISOLATION, "Operation refused, unit %s may not be isolated.", u->id);
+                }
 
         if (mode == JOB_TRIGGERING && type != JOB_STOP)
                 return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "--job-mode=triggering is only valid for stop.");
@@ -2198,27 +2207,30 @@ int manager_add_job_full(
         if (mode == JOB_RESTART_DEPENDENCIES && type != JOB_START)
                 return sd_bus_error_set(error, SD_BUS_ERROR_INVALID_ARGS, "--job-mode=restart-dependencies is only valid for start.");
 
-        log_unit_debug(unit, "Trying to enqueue job %s/%s/%s", unit->id, job_type_to_string(type), job_mode_to_string(mode));
+        SET_FOREACH(u, unit_set)
+                log_unit_debug(u, "Trying to enqueue job %s/%s/%s", u->id, job_type_to_string(type), job_mode_to_string(mode));
 
-        type = job_type_collapse(type, unit);
 
         tr = transaction_new(mode == JOB_REPLACE_IRREVERSIBLY);
         if (!tr)
                 return -ENOMEM;
 
-        r = transaction_add_job_and_dependencies(
-                        tr,
-                        type,
-                        unit,
-                        /* by= */ NULL,
-                        TRANSACTION_MATTERS |
-                        (IN_SET(mode, JOB_IGNORE_DEPENDENCIES, JOB_IGNORE_REQUIREMENTS) ? TRANSACTION_IGNORE_REQUIREMENTS : 0) |
-                        (mode == JOB_IGNORE_DEPENDENCIES ? TRANSACTION_IGNORE_ORDER : 0) |
-                        (mode == JOB_RESTART_DEPENDENCIES ? TRANSACTION_PROPAGATE_START_AS_RESTART : 0) |
-                        extra_flags,
-                        error);
-        if (r < 0)
-                return r;
+        SET_FOREACH(u, unit_set) {
+                merged_type = job_type_collapse(type, u);
+                r = transaction_add_job_and_dependencies(
+                                tr,
+                                merged_type,
+                                u,
+                                /* by= */ NULL,
+                                TRANSACTION_MATTERS |
+                                (IN_SET(mode, JOB_IGNORE_DEPENDENCIES, JOB_IGNORE_REQUIREMENTS) ? TRANSACTION_IGNORE_REQUIREMENTS : 0) |
+                                (mode == JOB_IGNORE_DEPENDENCIES ? TRANSACTION_IGNORE_ORDER : 0) |
+                                (mode == JOB_RESTART_DEPENDENCIES ? TRANSACTION_PROPAGATE_START_AS_RESTART : 0) |
+                                extra_flags,
+                                error);
+                if (r < 0)
+                        return r;
+        }
 
         if (mode == JOB_ISOLATE) {
                 r = transaction_add_isolate_jobs(tr, m);
@@ -2226,24 +2238,73 @@ int manager_add_job_full(
                         return r;
         }
 
-        if (mode == JOB_TRIGGERING) {
-                r = transaction_add_triggering_jobs(tr, unit);
-                if (r < 0)
-                        return r;
-        }
+        if (mode == JOB_TRIGGERING)
+                SET_FOREACH(u, unit_set) {
+                        r = transaction_add_triggering_jobs(tr, u);
+                        if (r < 0)
+                                return r;
+                }
 
         r = transaction_activate(tr, m, mode, affected_jobs, error);
         if (r < 0)
                 return r;
 
-        log_unit_debug(unit,
-                       "Enqueued job %s/%s as %u", unit->id,
-                       job_type_to_string(type), (unsigned) tr->anchor_job->id);
+        SET_FOREACH(j, tr->anchor_jobs)
+                log_unit_debug(j->unit,
+                               "Enqueued job %s/%s as %u", j->unit->id,
+                               job_type_to_string(type), (unsigned) j->id);
 
-        if (ret)
-                *ret = tr->anchor_job;
+        if (jobs) {
+                /* anchor_jobs would be destroyed anyway so steal the contents */
+                r = set_move(jobs, tr->anchor_jobs);
+                if (r < 0)
+                        return r;
+        }
 
         tr = transaction_free(tr);
+        return 0;
+}
+
+
+int manager_add_job_full(
+                Manager *m,
+                JobType type,
+                Unit *unit,
+                JobMode mode,
+                TransactionAddFlags extra_flags,
+                Set *affected_jobs,
+                sd_bus_error *e,
+                Job **_ret) {
+
+        _cleanup_set_free_ Set *unit_set = NULL;
+        _cleanup_set_free_ Set *job_set = NULL;
+        int r;
+
+        assert(m);
+        assert(type < _JOB_TYPE_MAX);
+        assert(unit);
+        assert(mode < _JOB_MODE_MAX);
+
+        unit_set = set_new(NULL);
+        if (!unit_set)
+                return -ENOMEM;
+
+        job_set = set_new(NULL);
+        if (!job_set)
+                return -ENOMEM;
+
+        r = set_put(unit_set, (void *)unit);
+        if (r < 0)
+                return r;
+
+        r = manager_add_job_set_full(m, type, unit_set, mode, extra_flags, affected_jobs, e, job_set);
+        if (r < 0)
+                return r;
+
+        assert(!set_isempty(job_set));
+        if (_ret)
+                *_ret = (Job *)set_steal_first(job_set);
+
         return 0;
 }
 
@@ -2302,7 +2363,7 @@ int manager_propagate_reload(Manager *m, Unit *unit, JobMode mode, sd_bus_error 
         transaction_add_propagate_reload_jobs(
                         tr,
                         unit,
-                        tr->anchor_job,
+                        set_first(tr->anchor_jobs),
                         mode == JOB_IGNORE_DEPENDENCIES ? TRANSACTION_IGNORE_ORDER : 0);
 
         r = transaction_activate(tr, m, mode, NULL, e);

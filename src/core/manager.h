@@ -576,6 +576,24 @@ static inline int manager_add_job(
                 Job **ret) {
         return manager_add_job_full(m, type, unit, mode, 0, NULL, error, ret);
 }
+int manager_add_job_set_full(
+                Manager *m,
+                JobType type,
+                Set *unit_set,
+                JobMode mode,
+                TransactionAddFlags extra_flags,
+                Set *affected_jobs,
+                sd_bus_error *error,
+                Set *jobs);
+static inline int manager_add_job_set(
+                Manager *m,
+                JobType type,
+                Set *unit_set,
+                JobMode mode,
+                sd_bus_error *error,
+                Set *jobs) {
+        return manager_add_job_set_full(m, type, unit_set, mode, 0, NULL, error, jobs);
+}
 int manager_add_job_by_name(Manager *m, JobType type, const char *name, JobMode mode, Set *affected_jobs, sd_bus_error *e, Job **ret);
 int manager_add_job_by_name_and_warn(Manager *m, JobType type, const char *name, JobMode mode, Set *affected_jobs, Job **ret);
 int manager_propagate_reload(Manager *m, Unit *unit, JobMode mode, sd_bus_error *e);
