@@ -11,6 +11,7 @@
 #include "log.h"
 #include "path-lookup.h"
 #include "show-status.h"
+#include "transaction.h"
 #include "unit.h"
 
 struct libmnt_monitor;
@@ -574,6 +575,22 @@ int manager_dispatch_external_fd_to_unit(Manager *m, const char *unit_id, const 
 int manager_load_startable_unit_or_warn(Manager *m, const char *name, const char *path, Unit **ret);
 int manager_load_unit_from_dbus_path(Manager *m, const char *s, sd_bus_error *e, Unit **_u);
 
+int manager_add_jobs_full(
+                Manager *m,
+                Hashmap *units_with_types,
+                JobMode mode,
+                TransactionAddFlags extra_flags,
+                Set *affected_jobs,
+                sd_bus_error *reterr_error,
+                Set *ret_jobs);
+static inline int manager_add_jobs(
+                Manager *m,
+                Hashmap *units_with_types,
+                JobMode mode,
+                sd_bus_error *reterr_error,
+                Set *ret_jobs) {
+        return manager_add_jobs_full(m, units_with_types, mode, /* extra_flags= */ 0, /* affected_jobs= */ NULL, reterr_error, ret_jobs);
+}
 int manager_add_job_full(
                 Manager *m,
                 JobType type,
@@ -583,14 +600,15 @@ int manager_add_job_full(
                 Set *affected_jobs,
                 sd_bus_error *reterr_error,
                 Job **ret);
-int manager_add_job(
+static inline int manager_add_job(
                 Manager *m,
                 JobType type,
                 Unit *unit,
                 JobMode mode,
                 sd_bus_error *reterr_error,
-                Job **ret);
-
+                Job **ret) {
+        return manager_add_job_full(m, type, unit, mode, /* extra_flags= */ 0, /* affected_jobs= */ NULL, reterr_error, ret);
+}
 int manager_add_job_by_name(Manager *m, JobType type, const char *name, JobMode mode, Set *affected_jobs, sd_bus_error *e, Job **ret);
 int manager_add_job_by_name_and_warn(Manager *m, JobType type, const char *name, JobMode mode, Set *affected_jobs, Job **ret);
 int manager_propagate_reload(Manager *m, Unit *unit, JobMode mode, sd_bus_error *e);
