@@ -11,7 +11,7 @@ typedef struct Transaction Transaction;
 struct Transaction {
         /* Jobs to be added */
         Hashmap *jobs;      /* Unit object => Job object list 1:1 */
-        Job *anchor_job;      /* the job the user asked for */
+        Set *anchor_jobs;      /* the jobs the user asked for */
         bool irreversible;
 };
 
