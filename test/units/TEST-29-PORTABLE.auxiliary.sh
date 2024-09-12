@@ -209,13 +209,31 @@ EOF
 
     # Both mkfs and the kernel need to support verity, so don't fail if enabling or mounting fails
     if keyctl padd asymmetric "minimal_0" %keyring:.fs-verity < /tmp/minimal_0.cer && tune2fs -O verity /tmp/verity.ext4 && mount -o X-mount.mkdir /tmp/verity.ext4 /etc/systemd/system.attached/; then
-        for f in /tmp/app0/usr/lib/systemd/system/app0.service /tmp/app0/usr/share/dbus-1/system.d/app0.conf /tmp/app0/usr/share/dbus-1/system-services/app0.service /tmp/app0/usr/share/polkit-1/actions/app0.policy; do
+        mkdir -p /tmp/app0/usr/lib/systemd/system/app0.service.d/
+        cat <<EOF >/tmp/app0/usr/lib/systemd/system/app0.service.d/20-portable.conf
+# Drop-in created for image '/usr/share/minimal_1.raw:/tmp/app0.raw', do not edit.
+
+[Service]
+RootImage=/usr/share/minimal_1.raw
+Environment=PORTABLE=app0.raw
+LogExtraFields=PORTABLE=app0.raw
+Environment=PORTABLE_ROOT=minimal_1.raw
+LogExtraFields=PORTABLE_ROOT=minimal_1.raw
+LogExtraFields=PORTABLE_ROOT_NAME_AND_VERSION=$(. /etc/os-release && echo "$ID")
+
+ExtensionImages=/tmp/app0.raw
+LogExtraFields=PORTABLE_EXTENSION=app0.raw
+LogExtraFields=PORTABLE_EXTENSION_NAME_AND_VERSION=app
+EOF
+
+        for f in /tmp/app0/usr/lib/systemd/system/app0.service /tmp/app0/usr/lib/systemd/system/app0.service.d/20-portable.conf /tmp/app0/usr/share/dbus-1/system.d/app0.conf /tmp/app0/usr/share/dbus-1/system-services/app0.service /tmp/app0/usr/share/polkit-1/actions/app0.policy; do
             fsverity digest --hash-alg=sha256 --for-builtin-sig --compact "$f" | \
                 tr -d '\n' | \
                 xxd -p -r | \
                     openssl smime -sign -nocerts -noattr -binary -in /dev/stdin -inkey /tmp/minimal_0.key -signer /tmp/minimal_0.crt -outform der -out "$f.p7s"
         done
 
+        rm -f /tmp/app0/usr/lib/systemd/system/app0.service.d/20-portable.conf
         have_fsverity=1
     fi
 fi
@@ -237,7 +255,7 @@ grep -q -F "org.freedesktop.app0" /etc/dbus-1/system-services/app0.service
 grep -q -F "org.freedesktop.app0" /etc/polkit-1/actions/app0.policy
 if [ "$have_fsverity" -eq 1 ]; then
     fsverity measure /etc/systemd/system.attached/app0.service
-    fsverity measure /etc/systemd/system.attached/app0.service.d/20-portable.conf
+    fsverity measure /etc/systemd/system.attached/app0.service.d/20-portable.conf && { echo 'unexpected success'; exit 1; }
     fsverity measure /etc/dbus-1/system.d/app0.conf
     fsverity measure /etc/dbus-1/system-services/app0.service
     fsverity measure /etc/polkit-1/actions/app0.policy
@@ -256,7 +274,7 @@ grep -q -F "LogExtraFields=PORTABLE_EXTENSION=app0.raw" /etc/systemd/system.atta
 grep -q -F "LogExtraFields=PORTABLE_EXTENSION_NAME_AND_VERSION=app" /etc/systemd/system.attached/app0.service.d/20-portable.conf
 if [ "$have_fsverity" -eq 1 ]; then
     fsverity measure /etc/systemd/system.attached/app0.service
-    fsverity measure /etc/systemd/system.attached/app0.service.d/20-portable.conf && { echo 'unexpected success'; exit 1; }
+    fsverity measure /etc/systemd/system.attached/app0.service.d/20-portable.conf
     fsverity measure /etc/dbus-1/system.d/app0.conf
     fsverity measure /etc/dbus-1/system-services/app0.service
     fsverity measure /etc/polkit-1/actions/app0.policy

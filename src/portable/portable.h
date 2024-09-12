@@ -38,8 +38,9 @@ static const struct {
 
 #define PORTABLE_METADATA_IS_OS_RELEASE(m) (streq((m)->name, "/etc/os-release"))
 #define PORTABLE_METADATA_IS_EXTENSION_RELEASE(m) (startswith_strv((m)->name, STRV_MAKE("/usr/lib/extension-release.d/extension-release.", "/etc/extension-release.d/extension-release.")))
-#define PORTABLE_METADATA_IS_UNIT(m) (!IN_SET((m)->name[0], 0, '/'))
+#define PORTABLE_METADATA_IS_UNIT(m) (!IN_SET((m)->name[0], 0, '/') && !endswith((m)->name, ".d/20-portable.conf.p7s"))
 #define PORTABLE_METADATA_IS_AUXILIARY_FILE(m) (startswith_strv((m)->name, STRV_MAKE("/usr/share/dbus-1/system.d/", "/usr/share/dbus-1/system-services/", "/usr/share/polkit-1/actions/")))
+#define PORTABLE_METADATA_IS_DROP_IN_SIGNATURE(m) (endswith((m)->name, ".d/20-portable.conf.p7s"))
 
 typedef enum PortableFlags {
         PORTABLE_RUNTIME         = 1 << 0, /* Public API via DBUS, do not change */

@@ -28,6 +28,7 @@
 #include "fs-util.h"
 #include "install.h"
 #include "iovec-util.h"
+#include "io-util.h"
 #include "locale-util.h"
 #include "loop-util.h"
 #include "memfd-util.h"
@@ -226,7 +227,8 @@ static int send_files(
                 char **matches,
                 bool sending_units,
                 int socket_fd,
-                Hashmap *files) {
+                Hashmap *files,
+                Hashmap *drop_in_signatures) {
 
         int r;
 
@@ -374,6 +376,73 @@ static int send_files(
                                         return log_debug_errno(r, "Failed to add file to hashmap: %m");
                                 TAKE_PTR(m);
                         }
+
+                        if (!sending_units)
+                                continue;
+
+                        PortableMetadataSignatureType drop_in_signature_type = PORTABLE_METADATA_SIGNATURE_TYPE_NONE;
+                        _cleanup_close_ int placeholder_fd = -EBADF, drop_in_dir_fd = -EBADF, drop_in_signature_fd = -EBADF;
+                        _cleanup_free_ char *drop_in_signature_name = NULL, *drop_in_dir = NULL;
+
+                        drop_in_dir = strjoin(de->d_name, ".d");
+                        if (!drop_in_dir)
+                                return -ENOMEM;
+
+                        drop_in_dir_fd = openat(dirfd(d), drop_in_dir, O_CLOEXEC|O_DIRECTORY);
+                        if (drop_in_dir_fd >= 0) {
+                                drop_in_signature_fd = openat(drop_in_dir_fd, "20-portable.conf.p7s", O_CLOEXEC|O_RDONLY);
+                                if (drop_in_signature_fd < 0 && errno != -ENOENT)
+                                        log_debug_errno(errno, "Failed to read drop-in signature file '%s.d/20-portable.conf.p7s', ignoring: %m", de->d_name);
+                                else
+                                        drop_in_signature_type = PORTABLE_METADATA_SIGNATURE_TYPE_P7S;
+                        }
+
+                        if (drop_in_signature_fd < 0)
+                                continue;
+
+                        drop_in_signature_name = strjoin(de->d_name, ".d/20-portable.conf.p7s");
+                        if (!drop_in_signature_name)
+                                return -ENOMEM;
+
+                        placeholder_fd = memfd_new_and_seal("placeholder", "", 1);
+                        if (placeholder_fd < 0)
+                                return log_debug_errno(placeholder_fd, "Failed to create memfd: %m");
+
+                        if (socket_fd >= 0) {
+                                struct iovec iov[] = {
+                                        IOVEC_MAKE_STRING(drop_in_signature_name),
+                                        IOVEC_MAKE((char *)"\0", sizeof(char)),
+                                        IOVEC_MAKE((PortableMetadataSignatureType *)&drop_in_signature_type, sizeof(PortableMetadataSignatureType)),
+                                        IOVEC_MAKE_STRING(""), /* no SELinux label for drop-in signatures */
+                                };
+
+                                /* We are sending this over in an iovec, ensure it's 1 byte so that we
+                                        * don't have to worry about alignment. */
+                                assert_se(sizeof(PortableMetadataSignatureType) == 1);
+
+                                r = send_one_fd_iov_with_data_fd(socket_fd, iov, ELEMENTSOF(iov), placeholder_fd);
+                                if (r < 0)
+                                        return log_debug_errno(r, "Failed to send file metadata to parent: %m");
+
+                                r = send_one_fd_iov_with_data_fd(socket_fd, NULL, 0, drop_in_signature_fd);
+                                if (r < 0)
+                                        return log_debug_errno(r, "Failed to send drop-in signature: %m");
+                        }
+
+                        if (drop_in_signatures) {
+                                m = portable_metadata_new(drop_in_signature_name, where, NULL, drop_in_signature_type, drop_in_signature_fd, placeholder_fd);
+                                if (!m)
+                                        return -ENOMEM;
+                                TAKE_FD(placeholder_fd);
+                                TAKE_FD(drop_in_signature_fd);
+
+                                m->source = TAKE_PTR(drop_in_signature_name);
+
+                                r = hashmap_put(drop_in_signatures, m->name, m);
+                                if (r < 0)
+                                        return log_debug_errno(r, "Failed to add drop-in signature to hashmap: %m");
+                                TAKE_PTR(m);
+                        }
                 }
         }
 
@@ -392,9 +461,10 @@ static int extract_now(
                 int socket_fd,
                 PortableMetadata **ret_os_release,
                 Hashmap **ret_unit_files,
-                Hashmap **ret_auxiliary_files) {
+                Hashmap **ret_auxiliary_files,
+                Hashmap **ret_drop_in_signatures) {
 
-        _cleanup_hashmap_free_ Hashmap *unit_files = NULL, *auxiliary_files = NULL;
+        _cleanup_hashmap_free_ Hashmap *unit_files = NULL, *auxiliary_files = NULL, *drop_in_signatures = NULL;
         _cleanup_(portable_metadata_unrefp) PortableMetadata *os_release = NULL;
         _cleanup_strv_free_ char **auxiliary_directories = NULL;
         _cleanup_(lookup_paths_done) LookupPaths paths = {};
@@ -475,12 +545,17 @@ static int extract_now(
         if (!unit_files)
                 return -ENOMEM;
 
+        drop_in_signatures = hashmap_new(&portable_metadata_hash_ops);
+        if (!drop_in_signatures)
+                return -ENOMEM;
+
         r = send_files(where,
                        paths.search_path,
                        matches,
                        /* sending_units= */ true,
                        socket_fd,
-                       unit_files);
+                       unit_files,
+                       drop_in_signatures);
         if (r < 0)
                 return r;
 
@@ -504,7 +579,8 @@ static int extract_now(
                        !strv_isempty(matches) ? matches : STRV_MAKE(image_name),
                        /* sending_units= */ false,
                        socket_fd,
-                       auxiliary_files);
+                       auxiliary_files,
+                       /* drop_in_signatures= */ NULL);
         if (r < 0)
                 return r;
 
@@ -527,9 +603,10 @@ static int portable_extract_by_path(
                 PortableMetadata **ret_os_release,
                 Hashmap **ret_unit_files,
                 Hashmap **ret_auxiliary_files,
+                Hashmap **ret_drop_in_signatures,
                 sd_bus_error *error) {
 
-        _cleanup_hashmap_free_ Hashmap *unit_files = NULL, *auxiliary_files = NULL;
+        _cleanup_hashmap_free_ Hashmap *unit_files = NULL, *auxiliary_files = NULL, *drop_in_signatures = NULL;
         _cleanup_(portable_metadata_unrefp) PortableMetadata* os_release = NULL;
         _cleanup_(loop_device_unrefp) LoopDevice *d = NULL;
         int r;
@@ -553,7 +630,7 @@ static int portable_extract_by_path(
                 if (r < 0)
                         return log_error_errno(r, "Failed to extract image name from path '%s': %m", path);
 
-                r = extract_now(path, matches, image_name, path_is_extension, /* relax_extension_release_check= */ false, -1, &os_release, &unit_files, &auxiliary_files);
+                r = extract_now(path, matches, image_name, path_is_extension, /* relax_extension_release_check= */ false, -1, &os_release, &unit_files, &auxiliary_files, &drop_in_signatures);
                 if (r < 0)
                         return r;
 
@@ -630,7 +707,7 @@ static int portable_extract_by_path(
                                 goto child_finish;
                         }
 
-                        r = extract_now(tmpdir, matches, m->image_name, path_is_extension, relax_extension_release_check, seq[1], NULL, NULL, NULL);
+                        r = extract_now(tmpdir, matches, m->image_name, path_is_extension, relax_extension_release_check, seq[1], NULL, NULL, NULL, NULL);
 
                 child_finish:
                         _exit(r < 0 ? EXIT_FAILURE : EXIT_SUCCESS);
@@ -644,6 +721,10 @@ static int portable_extract_by_path(
 
                 auxiliary_files = hashmap_new(&portable_metadata_hash_ops);
                 if (!auxiliary_files)
+                        return -ENOMEM;
+
+                drop_in_signatures = hashmap_new(&portable_metadata_hash_ops);
+                if (!drop_in_signatures)
                         return -ENOMEM;
 
                 for (;;) {
@@ -715,6 +796,12 @@ static int portable_extract_by_path(
                                         return log_debug_errno(r, "Failed to add item to file list: %m");
 
                                 add = NULL;
+                        } else if (PORTABLE_METADATA_IS_DROP_IN_SIGNATURE(add)) {
+                                r = hashmap_put(drop_in_signatures, add->name, add);
+                                if (r < 0)
+                                        return log_debug_errno(r, "Failed to add item to drop-ins signatures list: %m");
+
+                                add = NULL;
                         } else if (PORTABLE_METADATA_IS_UNIT(add)) {
                                 r = hashmap_put(unit_files, add->name, add);
                                 if (r < 0)
@@ -742,6 +829,9 @@ static int portable_extract_by_path(
         if (ret_unit_files)
                 *ret_unit_files = TAKE_PTR(unit_files);
 
+        if (ret_drop_in_signatures)
+                *ret_drop_in_signatures = TAKE_PTR(drop_in_signatures);
+
         if (ret_os_release)
                 *ret_os_release = TAKE_PTR(os_release);
 
@@ -764,6 +854,7 @@ static int extract_image_and_extensions(
                 PortableMetadata **ret_os_release,
                 Hashmap **ret_unit_files,
                 Hashmap **ret_auxiliary_files,
+                Hashmap **ret_drop_in_signatures,
                 char ***ret_valid_prefixes,
                 sd_bus_error *error) {
 
@@ -771,7 +862,7 @@ static int extract_image_and_extensions(
         _cleanup_(portable_metadata_unrefp) PortableMetadata *os_release = NULL;
         _cleanup_ordered_hashmap_free_ OrderedHashmap *extension_images = NULL, *extension_releases = NULL;
         _cleanup_(pick_result_done) PickResult result = PICK_RESULT_NULL;
-        _cleanup_hashmap_free_ Hashmap *unit_files = NULL, *auxiliary_files = NULL;
+        _cleanup_hashmap_free_ Hashmap *unit_files = NULL, *auxiliary_files = NULL, *drop_in_signatures = NULL;
         _cleanup_strv_free_ char **valid_prefixes = NULL;
         _cleanup_(image_unrefp) Image *image = NULL;
         Image *ext;
@@ -857,6 +948,7 @@ static int extract_image_and_extensions(
                         &os_release,
                         &unit_files,
                         &auxiliary_files,
+                        &drop_in_signatures,
                         error);
         if (r < 0)
                 return r;
@@ -887,7 +979,7 @@ static int extract_image_and_extensions(
 
         ORDERED_HASHMAP_FOREACH(ext, extension_images) {
                 _cleanup_(portable_metadata_unrefp) PortableMetadata *extension_release_meta = NULL;
-                _cleanup_hashmap_free_ Hashmap *extra_unit_files = NULL, *extra_auxiliary_files = NULL;
+                _cleanup_hashmap_free_ Hashmap *extra_unit_files = NULL, *extra_auxiliary_files = NULL, *extra_drop_in_signatures = NULL;
                 _cleanup_strv_free_ char **extension_release = NULL;
                 const char *e;
 
@@ -900,6 +992,7 @@ static int extract_image_and_extensions(
                                 &extension_release_meta,
                                 &extra_unit_files,
                                 &extra_auxiliary_files,
+                                &extra_drop_in_signatures,
                                 error);
                 if (r < 0)
                         return r;
@@ -921,6 +1014,16 @@ static int extract_image_and_extensions(
                 }
 
                 r = hashmap_move(auxiliary_files, extra_auxiliary_files);
+                if (r < 0)
+                        return r;
+
+                if (!drop_in_signatures) {
+                        drop_in_signatures = hashmap_new(&portable_metadata_hash_ops);
+                        if (!drop_in_signatures)
+                                return -ENOMEM;
+                }
+
+                r = hashmap_move(drop_in_signatures, extra_drop_in_signatures);
                 if (r < 0)
                         return r;
 
@@ -977,6 +1080,8 @@ static int extract_image_and_extensions(
                 *ret_unit_files = TAKE_PTR(unit_files);
         if (ret_auxiliary_files)
                 *ret_auxiliary_files = TAKE_PTR(auxiliary_files);
+        if (ret_drop_in_signatures)
+                *ret_drop_in_signatures = TAKE_PTR(drop_in_signatures);
         if (ret_valid_prefixes)
                 *ret_valid_prefixes = TAKE_PTR(valid_prefixes);
 
@@ -1017,6 +1122,7 @@ int portable_extract(
                         &os_release,
                         &unit_files,
                         /* ret_auxiliary_files= */ NULL,
+                        /* ret_drop_in_signatures= */ NULL,
                         ret_valid_prefixes ? &valid_prefixes : NULL,
                         error);
         if (r < 0)
@@ -1474,6 +1580,7 @@ static int install_chroot_dropin(
                 OrderedHashmap *extension_releases,
                 const PortableMetadata *m,
                 const PortableMetadata *os_release,
+                const PortableMetadata *drop_in_signature,
                 const char *dropin_dir,
                 PortableFlags flags,
                 char **ret_dropin,
@@ -1584,9 +1691,52 @@ static int install_chroot_dropin(
                         }
         }
 
-        r = write_string_file(dropin, text, WRITE_STRING_FILE_CREATE|WRITE_STRING_FILE_ATOMIC|WRITE_STRING_FILE_SYNC|WRITE_STRING_FILE_ENABLE_FS_VERITY);
+        LinkTmpfileFlags link_flags = LINK_TMPFILE_SYNC;
+        _cleanup_(unlink_and_freep) char *tmpfile = NULL;
+        _cleanup_close_ int fd = -EBADF;
+
+        if (flags & PORTABLE_FORCE_ATTACH)
+                link_flags |= LINK_TMPFILE_REPLACE;
+
+        fd = open_tmpfile_linkable(dropin, O_WRONLY|O_CLOEXEC, &tmpfile);
+        if (fd < 0)
+                return log_debug_errno(fd, "Failed to open a temporary file for %s: %m", dropin);
+
+        r = loop_write(fd, text, strlen(text));
         if (r < 0)
                 return log_debug_errno(r, "Failed to write '%s': %m", dropin);
+
+        _cleanup_close_ int read_only_fd = -EBADF;
+        _cleanup_free_ void *signature = NULL;
+        size_t signature_size = 0;
+
+        if (drop_in_signature && drop_in_signature->signature_fd >= 0) {
+                r = read_full_file(FORMAT_PROC_FD_PATH(drop_in_signature->signature_fd), (char **)&signature, &signature_size);
+                if (r < 0)
+                        return log_debug_errno(r, "Failed to read signature file: %m");
+        }
+
+        /* fsverity IOCTLs require an exclusive (no other FDs open), read-only, but writable (cannot
+         * be O_PATH) file descriptor, and fails otherwise. IPE denies opening a file that is not
+         * signed or alternatively O_TMPFILE/O_PATH/O_DIRECTORY. Solution: write the new file with
+         * O_TMPFILE, then reopen as O_RDONLY _before_ linking it into place (so that it's still
+         * O_TMPFILE underneath, which fsverity is ok with), then link it, close the original (so
+         * that the reopened one is the only one), and finally call the fsverity IOCTL. Easy peasy.
+         */
+        read_only_fd = fd_reopen(fd, O_RDONLY|O_CLOEXEC|O_NOCTTY);
+        if (read_only_fd < 0)
+                return -errno;
+
+        r = link_tmpfile(fd, tmpfile, dropin, link_flags);
+        if (r < 0)
+                return log_error_errno(r, "Failed to link file: %m");
+
+        tmpfile = mfree(tmpfile);
+        fd = safe_close(fd);
+
+        r = fsverity_enable(read_only_fd, dropin, signature, signature_size);
+        if (r < 0 && !ERRNO_IS_NOT_SUPPORTED(r))
+                log_warning_errno(r, "Failed to enable fs-verity on '%s', ignoring: %m", dropin);
 
         (void) portable_changes_add(changes, n_changes, PORTABLE_WRITE, dropin, NULL);
 
@@ -1681,6 +1831,7 @@ static int attach_unit_file(
                 OrderedHashmap *extension_releases,
                 const PortableMetadata *m,
                 const PortableMetadata *os_release,
+                const PortableMetadata *drop_in_signature,
                 const char *profile,
                 PortableFlags flags,
                 PortableChange **changes,
@@ -1724,7 +1875,7 @@ static int attach_unit_file(
          * is reloaded while we are creating things here: as long as only the drop-ins exist the unit doesn't exist at
          * all for PID 1. */
 
-        r = install_chroot_dropin(image_path, type, extension_images, extension_releases, m, os_release, dropin_dir, flags, &chroot_dropin, changes, n_changes);
+        r = install_chroot_dropin(image_path, type, extension_images, extension_releases, m, os_release, drop_in_signature, dropin_dir, flags, &chroot_dropin, changes, n_changes);
         if (r < 0)
                 return r;
 
@@ -2024,7 +2175,7 @@ int portable_attach(
 
         _cleanup_ordered_hashmap_free_ OrderedHashmap *extension_images = NULL, *extension_releases = NULL;
         _cleanup_(portable_metadata_unrefp) PortableMetadata *os_release = NULL;
-        _cleanup_hashmap_free_ Hashmap *unit_files = NULL, *auxiliary_files = NULL;
+        _cleanup_hashmap_free_ Hashmap *unit_files = NULL, *auxiliary_files = NULL, *drop_in_signatures = NULL;
         _cleanup_(lookup_paths_done) LookupPaths paths = {};
         _cleanup_strv_free_ char **valid_prefixes = NULL;
         _cleanup_(image_unrefp) Image *image = NULL;
@@ -2044,6 +2195,7 @@ int portable_attach(
                         &os_release,
                         &unit_files,
                         &auxiliary_files,
+                        &drop_in_signatures,
                         &valid_prefixes,
                         error);
         if (r < 0)
@@ -2110,7 +2262,7 @@ int portable_attach(
 
         HASHMAP_FOREACH(item, unit_files) {
                 r = attach_unit_file(&paths, image->path, image->type, extension_images, extension_releases,
-                                     item, os_release, profile, flags, changes, n_changes);
+                                     item, os_release, hashmap_get(drop_in_signatures, strjoina(item->name, ".d/20-portable.conf.p7s")), profile, flags, changes, n_changes);
                 if (r < 0)
                         return sd_bus_error_set_errnof(error, r, "Failed to attach unit '%s': %m", item->name);
         }
