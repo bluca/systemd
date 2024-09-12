@@ -1266,9 +1266,11 @@ static int install_auxiliary_file(
                 size_t *n_changes) {
 
         _cleanup_free_ char *path = NULL, *filename = NULL;
+        _cleanup_free_ void *signature = NULL;
         _cleanup_(unlink_and_freep) char *tmp = NULL;
-        _cleanup_close_ int fd = -EBADF;
+        _cleanup_close_ int fd = -EBADF, read_only_fd = -EBADF;
         const char *where = NULL, *service = NULL;
+        size_t signature_size = 0;
         int r;
 
         assert(m);
@@ -1322,11 +1324,42 @@ static int install_auxiliary_file(
         if (r < 0)
                 return log_debug_errno(r, "Failed to set user.portable xattr on '%s': %m", path);
 
+        if (m->signature_fd >= 0) {
+                r = read_full_file(FORMAT_PROC_FD_PATH(m->signature_fd), (char **)&signature, &signature_size);
+                if (r < 0)
+                        return log_debug_errno(r, "Failed to read signature file: %m");
+        }
+
+        if (m->signature_type == PORTABLE_METADATA_SIGNATURE_TYPE_IMA) {
+                r = xsetxattr(fd, /* path= */ NULL, "security.ima", signature, signature_size, 0);
+                if (r < 0 && !ERRNO_IS_NOT_SUPPORTED(r))
+                        log_debug_errno(r, "Failed to set IMA signature on '%s', ignoring: %m", path);
+
+                signature = mfree(signature);
+                signature_size = 0;
+        }
+
+        /* fsverity IOCTLs require an exclusive (no other FDs open), read-only, but writable (cannot
+         * be O_PATH) file descriptor, and fails otherwise. IPE denies opening a file that is not
+         * signed or alternatively O_TMPFILE/O_PATH/O_DIRECTORY. Solution: write the new file with
+         * O_TMPFILE, then reopen as O_RDONLY _before_ linking it into place (so that it's still
+         * O_TMPFILE underneath, which fsverity is ok with), then link it, close the original (so
+         * that the reopened one is the only one), and finally call the fsverity IOCTL. Easy peasy.
+         */
+        read_only_fd = fd_reopen(fd, O_RDONLY|O_CLOEXEC|O_NOCTTY);
+        if (read_only_fd < 0)
+                return read_only_fd;
+
         r = link_tmpfile(fd, tmp, path, LINK_TMPFILE_SYNC);
         if (r < 0)
                 return log_debug_errno(r, "Failed to install file '%s': %m", path);
 
         tmp = mfree(tmp);
+        fd = safe_close(fd);
+
+        r = fsverity_enable(read_only_fd, path, signature, signature_size);
+        if (r < 0 && !ERRNO_IS_NOT_SUPPORTED(r))
+                log_warning_errno(r, "Failed to enable fs-verity on '%s', ignoring: %m", path);
 
         (void) portable_changes_add(changes, n_changes, PORTABLE_COPY, path, m->name);
 

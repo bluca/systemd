@@ -209,10 +209,12 @@ EOF
 
     # Both mkfs and the kernel need to support verity, so don't fail if enabling or mounting fails
     if keyctl padd asymmetric "minimal_0" %keyring:.fs-verity < /tmp/minimal_0.cer && tune2fs -O verity /tmp/verity.ext4 && mount -o X-mount.mkdir /tmp/verity.ext4 /etc/systemd/system.attached/; then
-        fsverity digest --hash-alg=sha256 --for-builtin-sig --compact /tmp/app0/usr/lib/systemd/system/app0.service | \
-            tr -d '\n' | \
-            xxd -p -r | \
-                openssl smime -sign -nocerts -noattr -binary -in /dev/stdin -inkey /tmp/minimal_0.key -signer /tmp/minimal_0.crt -outform der -out /tmp/app0/usr/lib/systemd/system/app0.service.p7s
+        for f in /tmp/app0/usr/lib/systemd/system/app0.service /tmp/app0/usr/share/dbus-1/system.d/app0.conf /tmp/app0/usr/share/dbus-1/system-services/app0.service /tmp/app0/usr/share/polkit-1/actions/app0.policy; do
+            fsverity digest --hash-alg=sha256 --for-builtin-sig --compact "$f" | \
+                tr -d '\n' | \
+                xxd -p -r | \
+                    openssl smime -sign -nocerts -noattr -binary -in /dev/stdin -inkey /tmp/minimal_0.key -signer /tmp/minimal_0.crt -outform der -out "$f.p7s"
+        done
 
         have_fsverity=1
     fi
@@ -236,6 +238,9 @@ grep -q -F "org.freedesktop.app0" /etc/polkit-1/actions/app0.policy
 if [ "$have_fsverity" -eq 1 ]; then
     fsverity measure /etc/systemd/system.attached/app0.service
     fsverity measure /etc/systemd/system.attached/app0.service.d/20-portable.conf
+    fsverity measure /etc/dbus-1/system.d/app0.conf
+    fsverity measure /etc/dbus-1/system-services/app0.service
+    fsverity measure /etc/polkit-1/actions/app0.policy
     # Again, with signature enforcement, only the signed version should work
     echo 1 > /proc/sys/fs/verity/require_signatures
 fi
@@ -252,6 +257,9 @@ grep -q -F "LogExtraFields=PORTABLE_EXTENSION_NAME_AND_VERSION=app" /etc/systemd
 if [ "$have_fsverity" -eq 1 ]; then
     fsverity measure /etc/systemd/system.attached/app0.service
     fsverity measure /etc/systemd/system.attached/app0.service.d/20-portable.conf && { echo 'unexpected success'; exit 1; }
+    fsverity measure /etc/dbus-1/system.d/app0.conf
+    fsverity measure /etc/dbus-1/system-services/app0.service
+    fsverity measure /etc/polkit-1/actions/app0.policy
 fi
 
 portablectl detach --now --extension /tmp/app0.raw /usr/share/minimal_1.raw app0
