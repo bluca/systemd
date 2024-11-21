@@ -2718,7 +2718,7 @@ static int setup_exec_directory(
                         if (st.st_uid == UID_NOBODY && st.st_gid == GID_NOBODY) {
                                 do_chown = false;
                                 i->idmapped = true;
-                       } else if (exec_directory_is_private(context, type) && st.st_uid == 0 && st.st_gid == 0) {
+                       } else if (exec_directory_is_private(context, type)) {
                                 chown_uid = UID_NOBODY;
                                 chown_gid = GID_NOBODY;
                                 do_chown = true;
