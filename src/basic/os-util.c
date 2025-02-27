@@ -212,7 +212,7 @@ int open_extension_release_at(
         if (!IN_SET(image_class, IMAGE_SYSEXT, IMAGE_CONFEXT))
                 return -EINVAL;
 
-        if (!image_name_is_valid(extension))
+        if (!relax_extension_release_check && !image_name_is_valid(extension))
                 return log_debug_errno(SYNTHETIC_ERRNO(EINVAL), "The extension name %s is invalid.", extension);
 
         p = strjoina(image_class_release_info[image_class].release_file_path_prefix, extension);
@@ -240,6 +240,9 @@ int open_extension_release_at(
 
                 image_name = startswith(de->d_name, "extension-release.");
                 if (!image_name)
+                        continue;
+
+                if (endswith(de->d_name, "p7s"))
                         continue;
 
                 if (!image_name_is_valid(image_name)) {

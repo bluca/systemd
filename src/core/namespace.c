@@ -22,6 +22,7 @@
 #include "fd-util.h"
 #include "format-util.h"
 #include "glyph-util.h"
+#include "hexdecoct.h"
 #include "label-util.h"
 #include "list.h"
 #include "lock-util.h"
@@ -2398,58 +2399,121 @@ int setup_namespace(const NamespaceParameters *p, char **reterr_path) {
                     strv_isempty(p->read_write_paths))
                         dissect_image_flags |= DISSECT_IMAGE_READ_ONLY;
 
-                SET_FLAG(dissect_image_flags, DISSECT_IMAGE_NO_PARTITION_TABLE, p->verity && p->verity->data_path);
+                if (p->verity->data_path) {
+                        _cleanup_free_ char *node = NULL, *root_hash_encoded = NULL, *o = NULL;
 
-                if (p->runtime_scope == RUNTIME_SCOPE_SYSTEM) {
-                        /* In system mode we mount directly */
+                        root_hash_encoded = hexmem(p->verity->root_hash, p->verity->root_hash_size);
+                        if (!root_hash_encoded)
+                                return -ENOMEM;
 
-                        r = loop_device_make_by_path(
-                                        p->root_image,
-                                        FLAGS_SET(dissect_image_flags, DISSECT_IMAGE_DEVICE_READ_ONLY) ? O_RDONLY : -1 /* < 0 means writable if possible, read-only as fallback */,
-                                        /* sector_size= */ UINT32_MAX,
-                                        FLAGS_SET(dissect_image_flags, DISSECT_IMAGE_NO_PARTITION_TABLE) ? 0 : LO_FLAGS_PARTSCAN,
-                                        LOCK_SH,
-                                        &loop_device);
-                        if (r < 0)
-                                return log_debug_errno(r, "Failed to create loop device for root image: %m");
+                        dissect_image_flags |= DISSECT_IMAGE_NO_PARTITION_TABLE;
 
-                        r = dissect_loop_device(
-                                        loop_device,
-                                        p->verity,
-                                        p->root_image_options,
-                                        p->root_image_policy,
-                                        dissect_image_flags,
-                                        &dissected_image);
-                        if (r < 0)
-                                return log_debug_errno(r, "Failed to dissect image: %m");
+                        node = strjoin("/dev/mapper/", root_hash_encoded, "-verity");
+                        if (!node)
+                                return -ENOMEM;
 
-                        r = dissected_image_load_verity_sig_partition(
-                                        dissected_image,
-                                        loop_device->fd,
-                                        p->verity);
-                        if (r < 0)
-                                return r;
+                        dissected_image = new(DissectedImage, 1);
+                        if (!dissected_image)
+                                return -ENOMEM;
 
-                        r = dissected_image_decrypt(
-                                        dissected_image,
-                                        NULL,
-                                        p->verity,
-                                        dissect_image_flags);
-                        if (r < 0)
-                                return log_debug_errno(r, "Failed to decrypt dissected image: %m");
-                } else {
-                        userns_fd = namespace_open_by_type(NAMESPACE_USER);
-                        if (userns_fd < 0)
-                                return log_debug_errno(userns_fd, "Failed to open our own user namespace: %m");
+                        *dissected_image = (DissectedImage) {
+                                .has_init_system = -1,
+                                .image_name = strdup(node),
+                                .single_file_system = true,
+                                .has_verity = true,
+                                .has_verity_sig = false,
+                                .verity_sig_ready = !!p->verity->root_hash_sig,
+                        };
+                        if (!dissected_image->image_name)
+                                return -ENOMEM;
 
-                        r = mountfsd_mount_image(
-                                        p->root_image,
-                                        userns_fd,
-                                        p->root_image_policy,
-                                        dissect_image_flags,
-                                        &dissected_image);
-                        if (r < 0)
-                                return r;
+                        for (PartitionDesignator i = 0; i < _PARTITION_DESIGNATOR_MAX; i++)
+                                dissected_image->partitions[i] = DISSECTED_PARTITION_NULL;
+
+                        const char *options = mount_options_from_designator(p->root_image_options, PARTITION_ROOT);
+                        if (options) {
+                                o = strdup(options);
+                                if (!o)
+                                        return -ENOMEM;
+                        }
+
+                        dissected_image->partitions[PARTITION_ROOT] = (DissectedPartition) {
+                                .found = true,
+                                .partno = -1,
+                                .architecture = _ARCHITECTURE_INVALID,
+                                .node = TAKE_PTR(node),
+                                .mount_options = TAKE_PTR(o),
+                                .mount_node_fd = -EBADF,
+                                .fsmount_fd = -EBADF,
+                                .offset = 0,
+                                .size = UINT64_MAX,
+                                .fstype = strdup("squashfs"),
+                        };
+                        if (!dissected_image->partitions[PARTITION_ROOT].fstype)
+                                return -ENOMEM;
+
+                        dissected_image->partitions[PARTITION_ROOT].mount_node_fd = open(dissected_image->partitions[PARTITION_ROOT].node, O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_NOCTTY);
+                        if (dissected_image->partitions[PARTITION_ROOT].mount_node_fd < 0) {
+                                if (!ERRNO_IS_DEVICE_ABSENT(errno))
+                                        return log_debug_errno(errno, "Failed to open verity device %s: %m", dissected_image->partitions[PARTITION_ROOT].node);
+                                log_info("DBG: could not precache verity device %s", dissected_image->partitions[PARTITION_ROOT].node);
+                                dissected_image = dissected_image_unref(dissected_image);
+                        } else
+                                log_info("DBG: precached root verity device %s", dissected_image->partitions[PARTITION_ROOT].node);
+                }
+
+                if (!dissected_image) {
+                        if (p->runtime_scope == RUNTIME_SCOPE_SYSTEM) {
+                                /* In system mode we mount directly */
+
+                                r = loop_device_make_by_path(
+                                                p->root_image,
+                                                FLAGS_SET(dissect_image_flags, DISSECT_IMAGE_DEVICE_READ_ONLY) ? O_RDONLY : -1 /* < 0 means writable if possible, read-only as fallback */,
+                                                /* sector_size= */ UINT32_MAX,
+                                                FLAGS_SET(dissect_image_flags, DISSECT_IMAGE_NO_PARTITION_TABLE) ? 0 : LO_FLAGS_PARTSCAN,
+                                                LOCK_SH,
+                                                &loop_device);
+                                if (r < 0)
+                                        return log_debug_errno(r, "Failed to create loop device for root image: %m");
+
+                                r = dissect_loop_device(
+                                                loop_device,
+                                                p->verity,
+                                                p->root_image_options,
+                                                p->root_image_policy,
+                                                dissect_image_flags,
+                                                &dissected_image);
+                                if (r < 0)
+                                        return log_debug_errno(r, "Failed to dissect image: %m");
+
+                                r = dissected_image_load_verity_sig_partition(
+                                                dissected_image,
+                                                loop_device->fd,
+                                                p->verity);
+                                if (r < 0)
+                                        return r;
+
+                                r = dissected_image_decrypt(
+                                                dissected_image,
+                                                NULL,
+                                                p->verity,
+                                                dissect_image_flags);
+                                if (r < 0)
+                                        return log_debug_errno(r, "Failed to decrypt dissected image: %m");
+                        } else {
+                                userns_fd = namespace_open_by_type(NAMESPACE_USER);
+                                if (userns_fd < 0)
+                                        return log_debug_errno(userns_fd, "Failed to open our own user namespace: %m");
+
+                                r = mountfsd_mount_image(
+                                                p->root_image,
+                                                userns_fd,
+                                                p->root_image_policy,
+                                                dissect_image_flags,
+                                                &dissected_image);
+                                if (r < 0)
+                                        return r;
+                        }
                 }
         }
 
