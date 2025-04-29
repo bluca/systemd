@@ -10,11 +10,14 @@
 #include <sys/mount.h>
 
 #include "sd-device.h"
+#include "sd-json.h"
+#include "sd-varlink.h"
 
 #include "architecture.h"
 #include "argv-util.h"
 #include "blockdev-util.h"
 #include "build.h"
+#include "bus-polkit.h"
 #include "chase.h"
 #include "copy.h"
 #include "device-util.h"
@@ -58,6 +61,7 @@
 #include "tmpfile-util.h"
 #include "uid-classification.h"
 #include "user-util.h"
+#include "varlink-io.systemd.Dissect.h"
 #include "vpick.h"
 
 static enum {
@@ -108,6 +112,7 @@ static bool arg_all = false;
 static uid_t arg_uid_base = UID_INVALID;
 static bool arg_quiet = false;
 static ImageFilter *arg_image_filter = NULL;
+static bool arg_varlink = false;
 
 STATIC_DESTRUCTOR_REGISTER(arg_image, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_root, freep);
@@ -643,6 +648,16 @@ static int parse_argv(int argc, char *argv[]) {
         if (system_scope_requested || user_scope_requested)
                 arg_runtime_scope = system_scope_requested && user_scope_requested ? _RUNTIME_SCOPE_INVALID :
                         system_scope_requested ? RUNTIME_SCOPE_SYSTEM : RUNTIME_SCOPE_USER;
+
+        r = sd_varlink_invocation(SD_VARLINK_ALLOW_ACCEPT);
+        if (r < 0)
+                return log_error_errno(r, "Failed to check if invoked in Varlink mode: %m");
+        if (r > 0) {
+                arg_varlink = true;
+                arg_pager_flags |= PAGER_DISABLE;
+
+                return 1;
+        }
 
         switch (arg_action) {
 
@@ -2155,6 +2170,112 @@ static int action_validate(void) {
         return 0;
 }
 
+static int varlink_method_attach(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
+        _cleanup_(sd_json_variant_unrefp) sd_json_variant *v = NULL;
+        _cleanup_(dissected_image_unrefp) DissectedImage *m = NULL;
+        _cleanup_(loop_device_unrefp) LoopDevice *d = NULL;
+        const char *source = NULL;
+        int r, image_fd_idx;
+
+        static const sd_json_dispatch_field dispatch_table[] = {
+                // VARLINK_DISPATCH_POLKIT_FIELD,
+                { "source", SD_JSON_VARIANT_STRING, sd_json_dispatch_const_string, 0, SD_JSON_MANDATORY },
+                {}
+        };
+
+        assert(link);
+
+        r = sd_varlink_dispatch(link, parameters, dispatch_table, &source);
+        if (r != 0)
+                return r;
+
+        // r = varlink_verify_polkit_async(
+        //                 link,
+        //                 manager->bus,
+        //                 "org.freedesktop.machine1.create-machine",
+        //                 (const char**) STRV_MAKE("source", source),
+        //                 &manager->polkit_registry);
+        // if (r <= 0)
+        //         return r;
+
+        r = parse_image_path_argument(source, /* ret_root= */ NULL, &arg_image);
+        if (r < 0)
+                return r;
+
+        r = path_pick_update_warn(
+                        &arg_image,
+                        &pick_filter_image_raw,
+                        PICK_ARCHITECTURE|PICK_TRIES,
+                        /* ret_result= */ NULL);
+        if (r < 0)
+                return r;
+
+        r = verity_settings_load(
+                        &arg_verity_settings,
+                        arg_image,
+                        /* root_hash_path= */ NULL,
+                        /* root_hash_sig_path= */ NULL);
+        if (r < 0)
+                return log_error_errno(r, "Failed to read verity artifacts for %s: %m", arg_image);
+
+        if (arg_verity_settings.data_path)
+                arg_flags |= DISSECT_IMAGE_NO_PARTITION_TABLE; /* We only support Verity per file system,
+                                                                * hence if there's external Verity data
+                                                                * available we turn off partition table
+                                                                * support */
+
+        r = path_extract_filename(arg_image, &arg_loop_ref);
+        if (r < 0)
+                return log_error_errno(r, "Failed to extract file name from image path '%s': %m", arg_image);
+
+        uint32_t loop_flags;
+        int open_flags;
+
+        open_flags = FLAGS_SET(arg_flags, DISSECT_IMAGE_DEVICE_READ_ONLY) ? O_RDONLY : O_RDWR;
+        loop_flags = FLAGS_SET(arg_flags, DISSECT_IMAGE_NO_PARTITION_TABLE) ? 0 : LO_FLAGS_PARTSCAN;
+
+        r = loop_device_make_by_path(arg_image, open_flags, /* sector_size= */ UINT32_MAX, loop_flags, LOCK_SH, &d);
+        if (r < 0)
+                return log_error_errno(r, "Failed to set up loopback device for %s: %m", arg_image);
+
+        r = loop_device_set_filename(d, arg_loop_ref);
+        if (r < 0)
+                log_warning_errno(r, "Failed to set loop reference string to '%s', ignoring: %m", arg_loop_ref);
+
+        r = dissect_loop_device_and_warn(
+                        d,
+                        &arg_verity_settings,
+                        /* mount_options= */ NULL,
+                        arg_image_policy,
+                        arg_image_filter,
+                        arg_flags,
+                        &m);
+        if (r < 0)
+                return r;
+
+        r = loop_device_set_autoclear(d, true);
+        if (r < 0)
+                return log_error_errno(r, "Failed to enable auto-clear logic on loopback device: %m");
+
+        r = dissected_image_relinquish(m);
+        if (r < 0)
+                return log_error_errno(r, "Failed to relinquish DM and loopback block devices: %m");
+
+        image_fd_idx = sd_varlink_push_dup_fd(link, m->loop->fd);
+        if (ERRNO_IS_PRIVILEGE(image_fd_idx))
+                return sd_varlink_error(link, SD_VARLINK_ERROR_PERMISSION_DENIED, NULL);
+        if (image_fd_idx < 0)
+                return log_debug_errno(image_fd_idx, "Failed to push file descriptor over varlink: %m");
+
+        r = sd_json_buildo(
+                        &v,
+                        SD_JSON_BUILD_PAIR_INTEGER("fileDescriptor", image_fd_idx));
+        if (r < 0)
+                return r;
+
+        return sd_varlink_reply(link, v);
+}
+
 static int run(int argc, char *argv[]) {
         _cleanup_(dissected_image_unrefp) DissectedImage *m = NULL;
         _cleanup_(loop_device_unrefp) LoopDevice *d = NULL;
@@ -2169,6 +2290,38 @@ static int run(int argc, char *argv[]) {
                 r = parse_argv(argc, argv);
         if (r <= 0)
                 return r;
+
+        if (arg_varlink) {
+                _cleanup_(sd_varlink_server_unrefp) sd_varlink_server *varlink_server = NULL;
+
+                /* Invocation as Varlink service */
+
+                r = sd_varlink_server_new(
+                        &varlink_server,
+                        SD_VARLINK_SERVER_ACCOUNT_UID|
+                        SD_VARLINK_SERVER_INHERIT_USERDATA|
+                        SD_VARLINK_SERVER_ALLOW_FD_PASSING_OUTPUT);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to allocate Varlink server: %m");
+
+                r = sd_varlink_server_add_interface(varlink_server, &vl_interface_io_systemd_Dissect);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to add Varlink interface: %m");
+
+                r = sd_varlink_server_bind_method_many(
+                                varlink_server,
+                                "io.systemd.Dissect.Attach", varlink_method_attach);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to bind Varlink methods: %m");
+
+                // sd_varlink_server_set_userdata(varlink_server, manager);
+
+                r = sd_varlink_server_loop_auto(varlink_server);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to run Varlink event loop: %m");
+
+                return EXIT_SUCCESS;
+        }
 
         if (arg_image) {
                 r = path_pick_update_warn(

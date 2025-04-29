@@ -13,6 +13,7 @@
 #include "varlink-io.systemd.AskPassword.h"
 #include "varlink-io.systemd.BootControl.h"
 #include "varlink-io.systemd.Credentials.h"
+#include "varlink-io.systemd.Dissect.h"
 #include "varlink-io.systemd.FactoryReset.h"
 #include "varlink-io.systemd.Import.h"
 #include "varlink-io.systemd.Journal.h"
@@ -208,6 +209,8 @@ TEST(parse_format) {
         test_parse_format_one(&vl_interface_io_systemd_Login);
         print_separator();
         test_parse_format_one(&vl_interface_io_systemd_FactoryReset);
+        print_separator();
+        test_parse_format_one(&vl_interface_io_systemd_Dissect);
         print_separator();
         test_parse_format_one(&vl_interface_xyz_test);
 }

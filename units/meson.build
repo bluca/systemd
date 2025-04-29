@@ -326,6 +326,15 @@ units = [
           'symlinks' : ['sockets.target.wants/'],
         },
         { 'file' : 'systemd-creds@.service' },
+        {
+          'file' : 'systemd-dissect.socket',
+          'conditions' : ['HAVE_BLKID'],
+          'symlinks' : ['sockets.target.wants/'],
+        },
+        {
+          'file' : 'systemd-dissect@.service',
+          'conditions' : ['HAVE_BLKID'],
+        },
         { 'file' : 'systemd-exit.service' },
         { 'file' : 'systemd-factory-reset@.service.in' },
         {
