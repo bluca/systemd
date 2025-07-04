@@ -5,6 +5,7 @@
 name: Lint Code Base
 
 on:
+  push:
   pull_request:
     branches:
       - main
@@ -35,6 +36,8 @@ jobs:
           MULTI_STATUS: false
           VALIDATE_ALL_CODEBASE: false
           VALIDATE_GITHUB_ACTIONS: true
+          VALIDATE_YAML: false
+          LOG_LEVEL: DEBUG
 
       - uses: systemd/mkosi@0d1143150835b21c1bfe64428df5f45b558280b1
 
