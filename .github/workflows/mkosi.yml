@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - main
+      - debug
       - v[0-9]+-stable
     paths:
       - "**"
@@ -78,6 +79,17 @@ jobs:
             shim: 0
           - distro: debian
             release: testing
+            runner: ubuntu-24.04
+            sanitizers: ""
+            llvm: 0
+            cflags: "-Og"
+            relabel: no
+            vm: 0
+            no_qemu: 0
+            no_kvm: 0
+            shim: 1
+          - distro: debian
+            release: unstable
             runner: ubuntu-24.04
             sanitizers: ""
             llvm: 0
@@ -308,7 +320,7 @@ jobs:
             --print-errorlogs \
             --no-stdsplit \
             --num-processes "$(($(nproc) - 1))" \
-            "${MAX_LINES[@]}"
+            "${MAX_LINES[@]}" TEST-64-UDEV-STORAGE-simultaneous_events
 
       - name: Archive failed test journals
         uses: actions/upload-artifact@v4
