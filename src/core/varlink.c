@@ -387,6 +387,13 @@ int manager_setup_varlink_server(Manager *m) {
                         "io.systemd.Manager.Reexecute", vl_method_reexecute_manager,
                         "io.systemd.Manager.Reload", vl_method_reload_manager,
                         "io.systemd.Unit.List", vl_method_list_units,
+                        "io.systemd.Unit.Reload", vl_method_reload_unit,
+                        "io.systemd.Unit.Start", vl_method_start_unit,
+                        "io.systemd.Unit.Stop", vl_method_stop_unit,
+                        "io.systemd.Unit.Restart", vl_method_restart_unit,
+                        "io.systemd.Unit.TryRestart", vl_method_try_restart_unit,
+                        "io.systemd.Unit.ReloadOrRestart", vl_method_reload_or_restart_unit,
+                        "io.systemd.Unit.ReloadOrTryRestart", vl_method_reload_or_try_restart_unit,
                         "io.systemd.service.Ping", varlink_method_ping,
                         "io.systemd.service.GetEnvironment", varlink_method_get_environment);
         if (r < 0)

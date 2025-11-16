@@ -3,6 +3,7 @@
 
 #include "core-forward.h"
 #include "list.h"
+#include "locale-util.h"
 
 /* Be careful when changing the job types! Adjust job_merging_table[] accordingly! */
 enum JobType {
@@ -143,6 +144,14 @@ typedef struct Job {
 
         bool in_gc_queue:1;
 } Job;
+
+static const char *const polkit_message_for_job[_JOB_TYPE_MAX] = {
+        [JOB_START]       = N_("Authentication is required to start '$(unit)'."),
+        [JOB_STOP]        = N_("Authentication is required to stop '$(unit)'."),
+        [JOB_RELOAD]      = N_("Authentication is required to reload '$(unit)'."),
+        [JOB_RESTART]     = N_("Authentication is required to restart '$(unit)'."),
+        [JOB_TRY_RESTART] = N_("Authentication is required to restart '$(unit)'."),
+};
 
 Job* job_new(Unit *unit, JobType type);
 Job* job_new_raw(Unit *unit);

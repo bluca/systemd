@@ -3,6 +3,7 @@
 #include "sd-json.h"
 
 #include "bitfield.h"
+#include "bus-polkit.h"
 #include "cgroup.h"
 #include "condition.h"
 #include "execute.h"
@@ -13,7 +14,9 @@
 #include "path-util.h"
 #include "pidref.h"
 #include "selinux-access.h"
+#include "service.h"
 #include "set.h"
+#include "special.h"
 #include "strv.h"
 #include "unit.h"
 #include "varlink-cgroup.h"
@@ -373,7 +376,7 @@ static int lookup_unit_by_pidref(sd_varlink *link, Manager *manager, PidRef *pid
 }
 
 typedef struct UnitLookupParameters {
-        const char *name, *cgroup;
+        const char *name, *cgroup, *mode;
         PidRef pidref;
         sd_id128_t invocation_id;
 } UnitLookupParameters;
@@ -387,6 +390,20 @@ static int varlink_error_no_such_unit(sd_varlink *v, const char *name) {
         return sd_varlink_errorbo(
                         ASSERT_PTR(v),
                         VARLINK_ERROR_UNIT_NO_SUCH_UNIT,
+                        JSON_BUILD_PAIR_STRING_NON_EMPTY("parameter", name));
+}
+
+static int varlink_error_only_by_dependency(sd_varlink *v, const char *name) {
+        return sd_varlink_errorbo(
+                        ASSERT_PTR(v),
+                        VARLINK_ERROR_UNIT_ONLY_BY_DEPENDENCY,
+                        JSON_BUILD_PAIR_STRING_NON_EMPTY("parameter", name));
+}
+
+static int varlink_error_bus_shutting_down(sd_varlink *v, const char *name) {
+        return sd_varlink_errorbo(
+                        ASSERT_PTR(v),
+                        VARLINK_ERROR_UNIT_BUS_SHUTTING_DOWN,
                         JSON_BUILD_PAIR_STRING_NON_EMPTY("parameter", name));
 }
 
@@ -511,4 +528,197 @@ int vl_method_list_units(sd_varlink *link, sd_json_variant *parameters, sd_varli
                 return list_unit_one(link, previous, /* more = */ false);
 
         return sd_varlink_error(link, "io.systemd.Manager.NoSuchUnit", NULL);
+}
+
+static int varlink_unit_queue_job_one(
+                sd_varlink *link,
+                Unit *u,
+                JobType type,
+                JobMode mode,
+                bool reload_if_possible) {
+
+        _cleanup_free_ char *job_path = NULL, *unit_path = NULL;
+        Job *j;
+        int r;
+
+        if (reload_if_possible && unit_can_reload(u)) {
+                if (type == JOB_RESTART)
+                        type = JOB_RELOAD_OR_START;
+                else if (type == JOB_TRY_RESTART)
+                        type = JOB_TRY_RELOAD;
+        }
+
+        if (type == JOB_STOP && UNIT_IS_LOAD_ERROR(u->load_state) && unit_active_state(u) == UNIT_INACTIVE)
+                return varlink_error_no_such_unit(link, "name");
+
+        if ((type == JOB_START && u->refuse_manual_start) ||
+            (type == JOB_STOP && u->refuse_manual_stop) ||
+            (IN_SET(type, JOB_RESTART, JOB_TRY_RESTART) && (u->refuse_manual_start || u->refuse_manual_stop)) ||
+            (type == JOB_RELOAD_OR_START && job_type_collapse(type, u) == JOB_START && u->refuse_manual_start))
+                return varlink_error_only_by_dependency(link, "name");
+
+        /* dbus-broker issues StartUnit for activation requests, and Type=dbus services automatically
+         * gain dependency on dbus.socket. Therefore, if dbus has a pending stop job, the new start
+         * job that pulls in dbus again would cause job type conflict. Let's avoid that by rejecting
+         * job enqueuing early.
+         *
+         * Note that unlike signal_activation_request(), we can't use unit_inactive_or_pending()
+         * here. StartUnit is a more generic interface, and thus users are allowed to use e.g. systemctl
+         * to start Type=dbus services even when dbus is inactive. */
+        if (type == JOB_START && u->type == UNIT_SERVICE && SERVICE(u)->type == SERVICE_DBUS)
+                FOREACH_STRING(dbus_unit, SPECIAL_DBUS_SOCKET, SPECIAL_DBUS_SERVICE) {
+                        Unit *dbus;
+
+                        dbus = manager_get_unit(u->manager, dbus_unit);
+                        if (dbus && unit_stop_pending(dbus))
+                                return varlink_error_bus_shutting_down(link, "name");
+                }
+
+        r = manager_add_job(u->manager, type, u, mode, /* error= */ NULL, &j);
+        if (r < 0)
+                return r;
+
+        // r = bus_job_track_sender(j, message);
+        // if (r < 0)
+        //         return r;
+
+        // /* Before we send the method reply, force out the announcement JobNew for this job */
+        // bus_job_send_pending_change_signal(j, true);
+
+        // job_path = job_dbus_path(j);
+        // if (!job_path)
+        //         return -ENOMEM;
+
+        // return sd_bus_message_append(reply, "o", job_path);
+        return 0;
+}
+
+static int varlink_verify_manage_units_async(
+                sd_varlink *link,
+                Manager *manager,
+                const char *id,
+                const char *verb,
+                const char *polkit_message) {
+
+        const char *details[9];
+        size_t n_details = 0;
+
+        assert(manager);
+        assert(link);
+
+        if (id) {
+                details[n_details++] = "unit";
+                details[n_details++] = id;
+        }
+
+        if (verb) {
+                details[n_details++] = "verb";
+                details[n_details++] = verb;
+        };
+
+        if (polkit_message) {
+                details[n_details++] = "polkit.message";
+                details[n_details++] = polkit_message;
+                details[n_details++] = "polkit.gettext_domain";
+                details[n_details++] = GETTEXT_PACKAGE;
+        }
+
+        assert(n_details < ELEMENTSOF(details));
+        details[n_details] = NULL;
+
+        return varlink_verify_polkit_async(
+                        link,
+                        manager->system_bus,
+                        "org.freedesktop.systemd1.manage-units",
+                        n_details > 0 ? details : NULL,
+                        &manager->polkit_registry);
+}
+
+static int method_manage_unit(
+                sd_varlink *link,
+                sd_json_variant *parameters,
+                sd_varlink_method_flags_t flags,
+                void *userdata,
+                JobType job_type,
+                bool reload_if_possible) {
+
+        static const sd_json_dispatch_field dispatch_table[] = {
+                { "name", SD_JSON_VARIANT_STRING, json_dispatch_const_unit_name, offsetof(UnitLookupParameters, name), 0 /* allows UNIT_NAME_PLAIN | UNIT_NAME_INSTANCE */ },
+                { "mode", SD_JSON_VARIANT_STRING, sd_json_dispatch_const_string, offsetof(UnitLookupParameters, mode), 0 },
+                {}
+        };
+
+        Manager *manager = ASSERT_PTR(userdata);
+         _cleanup_(unit_lookup_parameters_done) UnitLookupParameters p = {
+                 .pidref = PIDREF_NULL,
+        };
+        const char *verb;
+        JobMode mode;
+        Unit *unit;
+        int r;
+
+        assert(link);
+        assert(parameters);
+
+        r = sd_varlink_dispatch(link, parameters, dispatch_table, &p);
+        if (r != 0)
+                return r;
+
+        r = lookup_unit_by_parameters(link, manager, &p, &unit);
+        if (r < 0)
+                return r;
+
+        if (reload_if_possible)
+                verb = strjoina("reload-or-", job_type_to_string(job_type));
+        else
+                verb = job_type_to_string(job_type);
+
+        mode = job_mode_from_string(p.mode);
+        if (mode < 0)
+                return sd_varlink_error_invalid_parameter_name(link, "mode");
+
+        r = mac_selinux_unit_access_check_varlink(unit, link, job_type_to_access_method(job_type));
+        if (r < 0)
+                return r;
+
+        r = varlink_verify_manage_units_async(
+                        link,
+                        manager,
+                        unit->id,
+                        verb,
+                        polkit_message_for_job[job_type]);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return 1; /* No authorization for now, but the async polkit stuff will call us again when it has it */
+
+        return varlink_unit_queue_job_one(link, unit, job_type, mode, reload_if_possible);
+}
+
+int vl_method_reload_unit(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
+        return method_manage_unit(link, parameters, flags, userdata, JOB_RELOAD, /* reload_if_possible= */ false);
+}
+
+int vl_method_start_unit(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
+        return method_manage_unit(link, parameters, flags, userdata, JOB_START, /* reload_if_possible= */ false);
+}
+
+int vl_method_stop_unit(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
+        return method_manage_unit(link, parameters, flags, userdata, JOB_STOP, /* reload_if_possible= */ false);
+}
+
+int vl_method_restart_unit(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
+        return method_manage_unit(link, parameters, flags, userdata, JOB_RESTART, /* reload_if_possible= */ false);
+}
+
+int vl_method_try_restart_unit(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
+        return method_manage_unit(link, parameters, flags, userdata, JOB_TRY_RESTART, /* reload_if_possible= */ false);
+}
+
+int vl_method_reload_or_restart_unit(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
+        return method_manage_unit(link, parameters, flags, userdata, JOB_RELOAD_OR_START, /* reload_if_possible= */ true);
+}
+
+int vl_method_reload_or_try_restart_unit(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
+        return method_manage_unit(link, parameters, flags, userdata, JOB_TRY_RESTART, /* reload_if_possible= */ true);
 }

@@ -367,14 +367,6 @@ static int property_get_markers(
         return sd_bus_message_close_container(reply);
 }
 
-static const char *const polkit_message_for_job[_JOB_TYPE_MAX] = {
-        [JOB_START]       = N_("Authentication is required to start '$(unit)'."),
-        [JOB_STOP]        = N_("Authentication is required to stop '$(unit)'."),
-        [JOB_RELOAD]      = N_("Authentication is required to reload '$(unit)'."),
-        [JOB_RESTART]     = N_("Authentication is required to restart '$(unit)'."),
-        [JOB_TRY_RESTART] = N_("Authentication is required to restart '$(unit)'."),
-};
-
 int bus_unit_method_start_generic(
                 sd_bus_message *message,
                 Unit *u,

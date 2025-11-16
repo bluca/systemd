@@ -1012,6 +1012,14 @@ static SD_VARLINK_DEFINE_ERROR(
                 NoSuchUnit,
                 SD_VARLINK_DEFINE_FIELD(parameter, SD_VARLINK_STRING, SD_VARLINK_NULLABLE));
 
+static SD_VARLINK_DEFINE_ERROR(
+                OnlyByDependency,
+                SD_VARLINK_DEFINE_FIELD(parameter, SD_VARLINK_STRING, SD_VARLINK_NULLABLE));
+
+static SD_VARLINK_DEFINE_ERROR(
+                BusShuttingDown,
+                SD_VARLINK_DEFINE_FIELD(parameter, SD_VARLINK_STRING, SD_VARLINK_NULLABLE));
+
 static SD_VARLINK_DEFINE_METHOD_FULL(
                 List,
                 SD_VARLINK_SUPPORTS_MORE,
@@ -1028,7 +1036,62 @@ static SD_VARLINK_DEFINE_METHOD_FULL(
                 SD_VARLINK_FIELD_COMMENT("Runtime information of the unit"),
                 SD_VARLINK_DEFINE_OUTPUT_BY_TYPE(runtime, UnitRuntime, 0));
 
-static SD_VARLINK_DEFINE_METHOD(Reload);
+static SD_VARLINK_DEFINE_METHOD(
+                Reload,
+                SD_VARLINK_FIELD_COMMENT("Name of the unit to reload"),
+                SD_VARLINK_DEFINE_INPUT(name, SD_VARLINK_STRING, 0),
+                SD_VARLINK_FIELD_COMMENT("Job mode for the reload operation"),
+                SD_VARLINK_DEFINE_INPUT(mode, SD_VARLINK_STRING, 0),
+                SD_VARLINK_FIELD_COMMENT("The job ID of the reload operation."),
+                SD_VARLINK_DEFINE_OUTPUT(JobId, SD_VARLINK_INT, 0));
+static SD_VARLINK_DEFINE_METHOD(
+                Start,
+                SD_VARLINK_FIELD_COMMENT("Name of the unit to start"),
+                SD_VARLINK_DEFINE_INPUT(name, SD_VARLINK_STRING, 0),
+                SD_VARLINK_FIELD_COMMENT("Job mode for the reload operation"),
+                SD_VARLINK_DEFINE_INPUT(mode, SD_VARLINK_STRING, 0),
+                SD_VARLINK_FIELD_COMMENT("The job ID of the start operation."),
+                SD_VARLINK_DEFINE_OUTPUT(JobId, SD_VARLINK_INT, 0));
+static SD_VARLINK_DEFINE_METHOD(
+                Stop,
+                SD_VARLINK_FIELD_COMMENT("Name of the unit to stop"),
+                SD_VARLINK_DEFINE_INPUT(name, SD_VARLINK_STRING, 0),
+                SD_VARLINK_FIELD_COMMENT("Job mode for the stop operation"),
+                SD_VARLINK_DEFINE_INPUT(mode, SD_VARLINK_STRING, 0),
+                SD_VARLINK_FIELD_COMMENT("The job ID of the stop operation."),
+                SD_VARLINK_DEFINE_OUTPUT(JobId, SD_VARLINK_INT, 0));
+static SD_VARLINK_DEFINE_METHOD(
+                Restart,
+                SD_VARLINK_FIELD_COMMENT("Name of the unit to restart"),
+                SD_VARLINK_DEFINE_INPUT(name, SD_VARLINK_STRING, 0),
+                SD_VARLINK_FIELD_COMMENT("Job mode for the restart operation"),
+                SD_VARLINK_DEFINE_INPUT(mode, SD_VARLINK_STRING, 0),
+                SD_VARLINK_FIELD_COMMENT("The job ID of the restart operation."),
+                SD_VARLINK_DEFINE_OUTPUT(JobId, SD_VARLINK_INT, 0));
+static SD_VARLINK_DEFINE_METHOD(
+                TryRestart,
+                SD_VARLINK_FIELD_COMMENT("Name of the unit to try-restart"),
+                SD_VARLINK_DEFINE_INPUT(name, SD_VARLINK_STRING, 0),
+                SD_VARLINK_FIELD_COMMENT("Job mode for the try-restart operation"),
+                SD_VARLINK_DEFINE_INPUT(mode, SD_VARLINK_STRING, 0),
+                SD_VARLINK_FIELD_COMMENT("The job ID of the try-restart operation."),
+                SD_VARLINK_DEFINE_OUTPUT(JobId, SD_VARLINK_INT, 0));
+static SD_VARLINK_DEFINE_METHOD(
+                ReloadOrRestart,
+                SD_VARLINK_FIELD_COMMENT("Name of the unit to reload or restart"),
+                SD_VARLINK_DEFINE_INPUT(name, SD_VARLINK_STRING, 0),
+                SD_VARLINK_FIELD_COMMENT("Job mode for the reload-or-restart operation"),
+                SD_VARLINK_DEFINE_INPUT(mode, SD_VARLINK_STRING, 0),
+                SD_VARLINK_FIELD_COMMENT("The job ID of the reload-or-restart operation."),
+                SD_VARLINK_DEFINE_OUTPUT(JobId, SD_VARLINK_INT, 0));
+static SD_VARLINK_DEFINE_METHOD(
+                ReloadOrTryRestart,
+                SD_VARLINK_FIELD_COMMENT("Name of the unit to reload or try-restart"),
+                SD_VARLINK_DEFINE_INPUT(name, SD_VARLINK_STRING, 0),
+                SD_VARLINK_FIELD_COMMENT("Job mode for the reload-or-try-restart operation"),
+                SD_VARLINK_DEFINE_INPUT(mode, SD_VARLINK_STRING, 0),
+                SD_VARLINK_FIELD_COMMENT("The job ID of the reload-or-try-restart operation."),
+                SD_VARLINK_DEFINE_OUTPUT(JobId, SD_VARLINK_INT, 0));
 
 SD_VARLINK_DEFINE_INTERFACE(
                 io_systemd_Unit,
@@ -1037,6 +1100,18 @@ SD_VARLINK_DEFINE_INTERFACE(
                 &vl_method_List,
                 SD_VARLINK_SYMBOL_COMMENT("Reloads configuration files."),
                 &vl_method_Reload,
+                SD_VARLINK_SYMBOL_COMMENT("Start the unit."),
+                &vl_method_Start,
+                SD_VARLINK_SYMBOL_COMMENT("Stop the unit."),
+                &vl_method_Stop,
+                SD_VARLINK_SYMBOL_COMMENT("Restart the unit."),
+                &vl_method_Restart,
+                SD_VARLINK_SYMBOL_COMMENT("Restart the unit if it is already running."),
+                &vl_method_TryRestart,
+                SD_VARLINK_SYMBOL_COMMENT("Reload if supported, or restart the unit."),
+                &vl_method_ReloadOrRestart,
+                SD_VARLINK_SYMBOL_COMMENT("Reload if supported, or restart the unit, if it is already running."),
+                &vl_method_ReloadOrTryRestart,
                 &vl_type_RateLimit,
                 SD_VARLINK_SYMBOL_COMMENT("An object to represent a unit's conditions"),
                 &vl_type_Condition,
@@ -1096,4 +1171,8 @@ SD_VARLINK_DEFINE_INTERFACE(
 
                 /* Errors */
                 SD_VARLINK_SYMBOL_COMMENT("No matching unit found"),
-                &vl_error_NoSuchUnit);
+                &vl_error_NoSuchUnit,
+                SD_VARLINK_SYMBOL_COMMENT("Unit operation may be requested by dependency only"),
+                &vl_error_OnlyByDependency,
+                SD_VARLINK_SYMBOL_COMMENT("Operation refused, the bus is shutting down"),
+                &vl_error_BusShuttingDown);
