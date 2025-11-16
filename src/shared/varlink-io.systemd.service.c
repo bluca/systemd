@@ -11,8 +11,6 @@
 
 static SD_VARLINK_DEFINE_METHOD(Ping);
 
-static SD_VARLINK_DEFINE_METHOD(Reload);
-
 static SD_VARLINK_DEFINE_METHOD(
                 SetLogLevel,
                 SD_VARLINK_FIELD_COMMENT("The maximum log level, using BSD syslog log level integers."),
@@ -32,8 +30,6 @@ SD_VARLINK_DEFINE_INTERFACE(
                 SD_VARLINK_INTERFACE_COMMENT("An interface to control basic properties of systemd services."),
                 SD_VARLINK_SYMBOL_COMMENT("Checks if the service is running."),
                 &vl_method_Ping,
-                SD_VARLINK_SYMBOL_COMMENT("Reloads configuration files."),
-                &vl_method_Reload,
                 SD_VARLINK_SYMBOL_COMMENT("Sets the maximum log level."),
                 &vl_method_SetLogLevel,
                 SD_VARLINK_SYMBOL_COMMENT("Get current environment block."),
