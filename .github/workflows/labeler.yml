@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   triage:
-    if: github.repository == 'systemd/systemd'
+#    if: github.repository == 'systemd/systemd'
     runs-on: ubuntu-24.04
     permissions:
       pull-requests: write
@@ -34,7 +34,7 @@ jobs:
       if: github.event_name == 'pull_request'
 
     - name: Label PR based on policy in labeler.yml
-      uses: actions/labeler@634933edcd8ababfe52f92936142cc22ac488b1b
+      uses: bluca/labeler@main
       if: startsWith(github.event_name, 'pull_request') && github.base_ref == 'main' && github.event.action != 'closed'
       with:
         repo-token: "${{ secrets.GITHUB_TOKEN }}"
