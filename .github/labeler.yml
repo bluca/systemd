@@ -327,3 +327,5 @@ volatile:
 xdg-autostart:
   - changed-files:
     - any-glob-to-any-file: '**/**xdg-autostart-generator*'
+changed-files-labels-limit: 2
+max-files-changed: 4
