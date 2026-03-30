@@ -512,6 +512,15 @@ static void service_release_extra_fds(Service *s) {
         s->n_extra_fds = 0;
 }
 
+ServiceExtraFD* service_extra_fd_free(ServiceExtraFD *fd) {
+        if (!fd)
+                return NULL;
+
+        safe_close(fd->fd);
+        free(fd->fdname);
+        return mfree(fd);
+}
+
 static void service_release_stdio_fd(Service *s) {
         assert(s);
 
@@ -593,7 +602,7 @@ static int on_fd_store_io(sd_event_source *e, int fd, uint32_t revents, void *us
         return 0;
 }
 
-static int service_add_fd_store(Service *s, int fd_in, const char *name, bool do_poll) {
+int service_add_fd_store(Service *s, int fd_in, const char *name, bool do_poll) {
         _cleanup_(service_fd_store_unlinkp) ServiceFDStore *fs = NULL;
         _cleanup_(asynchronous_closep) int fd = ASSERT_FD(fd_in);
         struct stat st;
