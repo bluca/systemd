@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <linux/capability.h>
+#include <linux/liveupdate.h>
 #include <sys/prctl.h>
 #include <unistd.h>
 
@@ -12,7 +13,9 @@
 #include "bus-get-properties.h"
 #include "bus-log-control-api.h"
 #include "bus-message-util.h"
+#include "bus-polkit.h"
 #include "bus-util.h"
+#include "cgroup.h"
 #include "chase.h"
 #include "confidential-virt.h"
 #include "dbus-cgroup.h"
@@ -35,6 +38,7 @@
 #include "install.h"
 #include "locale-util.h"
 #include "log.h"
+#include "luo-util.h"
 #include "manager-dump.h"
 #include "manager.h"
 #include "memfd-util.h"
@@ -50,6 +54,7 @@
 #include "taint.h"
 #include "unit-name.h"
 #include "user-util.h"
+#include "utf8.h"
 #include "version.h"
 #include "virt.h"
 #include "watchdog.h"
@@ -1786,6 +1791,88 @@ static int method_kexec(sd_bus_message *message, void *userdata, sd_bus_error *r
         return sd_bus_reply_method_return(message, NULL);
 }
 
+static int method_allocate_luo_session(sd_bus_message *message, void *userdata, sd_bus_error *reterr_error) {
+        Manager *m = ASSERT_PTR(userdata);
+        _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
+        _cleanup_(pidref_done) PidRef pidref = PIDREF_NULL;
+        _cleanup_free_ char *cgroup_path = NULL, *session_name = NULL;
+        _cleanup_close_ int device_fd = -EBADF, session_fd = -EBADF;
+        const char *name;
+        Unit *u;
+        int r;
+
+        assert(message);
+
+        if (!MANAGER_IS_SYSTEM(m))
+                return sd_bus_error_set(reterr_error, SD_BUS_ERROR_NOT_SUPPORTED,
+                                        "AllocateLUOSession is only supported by the system manager.");
+
+        r = sd_bus_message_read(message, "s", &name);
+        if (r < 0)
+                return r;
+
+        if (isempty(name) || !string_is_safe(name) || !utf8_is_valid(name))
+                return sd_bus_error_set(reterr_error, SD_BUS_ERROR_INVALID_ARGS,
+                                        "Session name is empty or contains invalid characters.");
+
+        /* Adding new selinux labels is hard. Squinting a bit, accessing a LUO session allows changing the
+         * state of the system, and 'reload' allows changing the state of the system. Close enough. */
+        r = mac_selinux_access_check(message, "reload", reterr_error);
+        if (r < 0)
+                return r;
+
+        r = bus_verify_polkit_async(
+                        message,
+                        "org.freedesktop.systemd1.allocate-luo-session",
+                        /* details= */ NULL,
+                        &m->polkit_registry,
+                        reterr_error);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return 1; /* No authorization for now, but the async polkit stuff will call us again when it has it */
+
+        /* Identify the calling service by its PID */
+        r = sd_bus_query_sender_creds(message, SD_BUS_CREDS_PID|SD_BUS_CREDS_PIDFD|SD_BUS_CREDS_AUGMENT, &creds);
+        if (r < 0)
+                return r;
+
+        r = bus_creds_get_pidref(creds, &pidref);
+        if (r < 0)
+                return r;
+
+        u = manager_get_unit_by_pidref(m, &pidref);
+        if (!u)
+                return sd_bus_error_set(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
+                                        "Caller is not part of any known unit.");
+
+        r = unit_get_cgroup_path_with_fallback(u, &cgroup_path);
+        if (r < 0)
+                return r;
+
+        session_name = strjoin(cgroup_path, "/", name);
+        if (!session_name)
+                return -ENOMEM;
+
+        if (strlen(session_name) >= LIVEUPDATE_SESSION_NAME_LENGTH)
+                return sd_bus_error_set(reterr_error, SD_BUS_ERROR_INVALID_ARGS,
+                                        "Session name too long.");
+
+        device_fd = luo_open_device();
+        if (device_fd < 0)
+                return sd_bus_error_set_errnof(reterr_error, device_fd,
+                                               "Failed to open /dev/liveupdate: %m");
+
+        session_fd = luo_create_session(device_fd, session_name);
+        if (session_fd < 0)
+                return sd_bus_error_set_errnof(reterr_error, session_fd,
+                                               "Failed to create LUO session '%s': %m", session_name);
+
+        log_debug("Allocated LUO session '%s' for unit '%s' via D-Bus.", session_name, u->id);
+
+        return sd_bus_reply_method_return(message, "h", session_fd);
+}
+
 static int method_switch_root(sd_bus_message *message, void *userdata, sd_bus_error *reterr_error) {
         Manager *m = ASSERT_PTR(userdata);
         _cleanup_free_ char *ri = NULL, *rt = NULL;
@@ -3304,6 +3391,11 @@ const sd_bus_vtable bus_manager_vtable[] = {
                       NULL,
                       method_kexec,
                       SD_BUS_VTABLE_CAPABILITY(CAP_SYS_BOOT)),
+        SD_BUS_METHOD_WITH_ARGS("AllocateLUOSession",
+                                SD_BUS_ARGS("s", name),
+                                SD_BUS_RESULT("h", session_fd),
+                                method_allocate_luo_session,
+                                SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD_WITH_ARGS("SwitchRoot",
                                 SD_BUS_ARGS("s", new_root, "s", init),
                                 SD_BUS_NO_RESULT,

@@ -32,6 +32,7 @@
 #include "glyph-util.h"
 #include "image-policy.h"
 #include "log.h"
+#include "luo-util.h"
 #include "manager.h"
 #include "mount-util.h"
 #include "namespace.h"
@@ -617,6 +618,24 @@ int service_add_fd_store(Service *s, int fd_in, const char *name, bool do_poll) 
 
         log_unit_debug(UNIT(s), "Trying to stash fd for dev=" DEVNUM_FORMAT_STR "/inode=%" PRIu64,
                        DEVNUM_FORMAT_VAL(st.st_dev), (uint64_t) st.st_ino);
+
+        /* If this fd is a LUO session, validate that the session name is within the unit's
+         * cgroup namespace. This prevents a service from storing a session that belongs to
+         * another unit. */
+        _cleanup_free_ char *luo_session_name = NULL;
+        r = fd_get_luo_session_name(fd, &luo_session_name);
+        if (r >= 0) {
+                _cleanup_free_ char *unit_cgroup = NULL;
+
+                r = unit_get_cgroup_path_with_fallback(UNIT(s), &unit_cgroup);
+                if (r < 0)
+                        return r;
+
+                if (!path_startswith(luo_session_name, unit_cgroup))
+                        return log_unit_warning_errno(UNIT(s), SYNTHETIC_ERRNO(EACCES),
+                                        "Refused to store LUO session '%s': name does not match unit's cgroup '%s'.",
+                                        luo_session_name, unit_cgroup);
+        }
 
         if (s->n_fd_store >= s->n_fd_store_max)
                 /* Our store is full.  Use this errno rather than E[NM]FILE to distinguish from the case

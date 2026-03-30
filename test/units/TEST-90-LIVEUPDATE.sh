@@ -38,6 +38,7 @@ EOF
 
 if ! grep -q systemd.test.luo_second_boot=1 /proc/cmdline; then
     # Create memfds with known content and push them to our fd store.
+    # Also request a LUO session, store a memfd in it, and push the session fd to the fd store.
     /usr/lib/systemd/tests/unit-tests/manual/test-luo store
 
     # Complete and start the late unit
@@ -88,7 +89,7 @@ EOF
     systemctl kexec
     exit 0
 else
-    # Verify that the fd store of the main test service survived the kexec.
+    # Verify that the fd store survived the kexec (memfds + LUO session).
     /usr/lib/systemd/tests/unit-tests/manual/test-luo check
 
     # Complete and start the late unit

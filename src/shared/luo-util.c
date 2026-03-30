@@ -208,9 +208,12 @@ int luo_preserve_fd_stores(sd_json_variant *serialization, int *ret_session_fd) 
                 return log_error_errno(session_fd, "Failed to create LUO session '%s': %m", LUO_SESSION_NAME);
 
         /* Build the mapping JSON for the new kernel's PID 1 and preserve each fd.
-         * JSON format:   { "cgroup": [ {"type": "fd", "name": "...", "fd_index": N}, ... ], ... }
+         * JSON format:   { "cgroup": [ {"type": "fd", "name": "...", "fd_index": N},
+         *                              {"type": "luo_session", "name": "...", "fd_index": N, "session_name": "..."} ], ... }
          *
-         * For regular fds: type=fd, preserved in the systemd session with the given fd_index. */
+         * For regular fds: type=fd, preserved in the systemd session with the given fd_index.
+         * For LUO session fds: type=luo_session, the session survives kexec independently, as it cannot be
+         * nested. */
         JSON_VARIANT_OBJECT_FOREACH(cgroup_path, entries, serialization) {
                 _cleanup_(sd_json_variant_unrefp) sd_json_variant *fd_list = NULL;
                 sd_json_variant *entry;
@@ -248,6 +251,22 @@ int luo_preserve_fd_stores(sd_json_variant *serialization, int *ret_session_fd) 
                                         return log_error_errno(r, "Failed to build LUO mapping: %m");
 
                                 ++fd_index;
+                        } else if (streq(type, "luo_session")) {
+                                sd_json_variant *sname_json = sd_json_variant_by_key(entry, "session_name");
+                                if (!sname_json)
+                                        continue;
+
+                                /* Remember the FDStore name to session name mapping */
+                                r = sd_json_variant_append_arraybo(
+                                                &fd_list,
+                                                SD_JSON_BUILD_PAIR_STRING("type", "luo_session"),
+                                                SD_JSON_BUILD_PAIR_STRING("name", name),
+                                                SD_JSON_BUILD_PAIR_STRING("session_name", sd_json_variant_string(sname_json)));
+                                if (r < 0)
+                                        return log_error_errno(r, "Failed to build LUO mapping for session fd: %m");
+
+                                log_debug("LUO session fd '%s' (session '%s') recorded in mapping.",
+                                          name, sd_json_variant_string(sname_json));
                         } else
                                 log_warning("Unknown fd type '%s' for cgroup '%s' fd '%s', skipping.", type, cgroup_path, name);
                 }
@@ -288,4 +307,39 @@ int luo_preserve_fd_stores(sd_json_variant *serialization, int *ret_session_fd) 
          * otherwise the kernel discards the session. */
         *ret_session_fd = TAKE_FD(session_fd);
         return 1;
+}
+
+int fd_is_luo_session(int fd) {
+        struct liveupdate_session_get_name args = {
+                .size = sizeof(args),
+        };
+
+        assert(fd >= 0);
+
+        /* Use the GET_NAME ioctl to check if this fd is a LUO session.
+         * Returns > 0 if it is, 0 if not (ENOTTY), negative errno on error.
+         * On old kernels without the ioctl, returns -ENOTTY. */
+        if (ioctl(fd, LIVEUPDATE_SESSION_GET_NAME, &args) < 0) {
+                if (ERRNO_IS_NOT_SUPPORTED(errno) || errno == ENOTTY)
+                        return 0;
+                return -errno;
+        }
+
+        return 1;
+}
+
+int fd_get_luo_session_name(int fd, char **ret) {
+        struct liveupdate_session_get_name args = {
+                .size = sizeof(args),
+        };
+
+        assert(fd >= 0);
+        assert(ret);
+
+        /* Use the GET_NAME ioctl to retrieve the session name.
+         * Returns -ENOTTY if not a LUO session fd or kernel too old. */
+        if (ioctl(fd, LIVEUPDATE_SESSION_GET_NAME, &args) < 0)
+                return -errno;
+
+        return strdup_to(ret, (const char *) args.name);
 }

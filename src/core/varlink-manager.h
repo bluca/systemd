@@ -15,3 +15,4 @@ int vl_method_reboot(sd_varlink *link, sd_json_variant *parameters, sd_varlink_m
 int vl_method_halt(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata);
 int vl_method_kexec(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata);
 int vl_method_soft_reboot(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata);
+int vl_method_allocate_luo_session(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata);

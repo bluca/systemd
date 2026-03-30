@@ -1,23 +1,33 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 /* Helper for TEST-90-LIVEUPDATE: creates memfds and stores them in the fd store,
- * or verifies that inherited fd store entries contain the expected content.
+ * requests a LUO session and stores a memfd in it, or verifies everything after kexec.
  *
  * Usage:
- *   test-luo store   - create memfds with test data and push them to the fd store
- *   test-luo check   - verify fd store content matches expectations
+ *   test-luo store - create memfds and a LUO session, push all to the fd store
+ *   test-luo check - verify fd store content and LUO session memfd after kexec
  */
 
+#include <fcntl.h>
+#include <linux/liveupdate.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/vfs.h>
 #include <unistd.h>
 
+#include "sd-bus.h"
 #include "sd-daemon.h"
+#include "sd-json.h"
+#include "sd-varlink.h"
 
+#include "bus-util.h"
 #include "errno-util.h"
 #include "fd-util.h"
+#include "fs-util.h"
 #include "log.h"
+#include "luo-util.h"
 #include "main-func.h"
 #include "memfd-util.h"
 #include "parse-util.h"
@@ -26,6 +36,8 @@
 
 #define TEST_DATA_1 "liveupdate-test-data-1"
 #define TEST_DATA_2 "liveupdate-test-data-2"
+#define SESSION_MEMFD_DATA "luo-session-memfd-test-data"
+#define SESSION_MEMFD_TOKEN UINT64_C(42)
 
 static int do_store(void) {
         _cleanup_close_ int fd1 = -EBADF, fd2 = -EBADF;
@@ -48,6 +60,101 @@ static int do_store(void) {
                 return log_error_errno(r, "Failed to store memfd 2 in fd store: %m");
 
         log_info("Stored 2 memfds in fd store.");
+
+        /* Also request a LUO session, put a memfd in it, and store the session fd */
+        _cleanup_(sd_varlink_unrefp) sd_varlink *vl = NULL;
+        _cleanup_close_ int session_fd = -EBADF, session_memfd = -EBADF;
+        sd_json_variant *reply = NULL;
+        const char *error_id = NULL;
+        int fd_idx;
+
+        // TODO: make sure this doesn't fail on 6.19/7.0
+
+        r = sd_varlink_connect_address(&vl, "/run/systemd/io.systemd.Manager");
+        if (r < 0)
+                return log_error_errno(r, "Failed to connect to io.systemd.Manager: %m");
+
+        r = sd_varlink_set_allow_fd_passing_input(vl, true);
+        if (r < 0)
+                return log_error_errno(r, "Failed to enable varlink fd passing: %m");
+
+        r = sd_varlink_callbo(
+                        vl,
+                        "io.systemd.Manager.AllocateLUOSession",
+                        &reply,
+                        &error_id,
+                        SD_JSON_BUILD_PAIR_STRING("name", "test"));
+        if (r < 0)
+                return log_error_errno(r, "Failed to call AllocateLUOSession: %m");
+        if (!isempty(error_id))
+                return log_error_errno(sd_varlink_error_to_errno(error_id, reply),
+                                       "AllocateLUOSession failed: %s", error_id);
+
+        fd_idx = (int) sd_json_variant_integer(sd_json_variant_by_key(reply, "sessionFileDescriptor"));
+        session_fd = sd_varlink_take_fd(vl, fd_idx);
+        if (session_fd < 0)
+                return log_error_errno(session_fd, "Failed to take session fd: %m");
+
+        session_memfd = memfd_new_and_seal("session-test", SESSION_MEMFD_DATA, strlen(SESSION_MEMFD_DATA));
+        if (session_memfd < 0)
+                return log_error_errno(session_memfd, "Failed to create session memfd: %m");
+
+        r = luo_session_preserve_fd(session_fd, session_memfd, SESSION_MEMFD_TOKEN);
+        if (r < 0)
+                return log_error_errno(r, "Failed to preserve memfd in session: %m");
+
+        r = sd_pid_notify_with_fds(0, false, "FDSTORE=1\nFDNAME=luosession", &session_fd, 1);
+        if (r < 0)
+                return log_error_errno(r, "Failed to store session fd in fd store: %m");
+        TAKE_FD(session_fd);
+
+        log_info("Stored LUO session with memfd from varlink in fd store.");
+
+        /* Also request a second LUO session via D-Bus */
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *bus_reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error bus_error = SD_BUS_ERROR_NULL;
+        _cleanup_close_ int dbus_session_fd = -EBADF, dbus_session_memfd = -EBADF;
+        int dbus_fd;
+
+        r = sd_bus_open_system(&bus);
+        if (r < 0)
+                return log_error_errno(r, "Failed to connect to system bus: %m");
+
+        r = sd_bus_call_method(
+                        bus,
+                        "org.freedesktop.systemd1",
+                        "/org/freedesktop/systemd1",
+                        "org.freedesktop.systemd1.Manager",
+                        "AllocateLUOSession",
+                        &bus_error,
+                        &bus_reply,
+                        "s", "test-dbus");
+        if (r < 0)
+                return log_error_errno(r, "D-Bus AllocateLUOSession call failed: %s", bus_error.message);
+
+        r = sd_bus_message_read(bus_reply, "h", &dbus_fd);
+        if (r < 0)
+                return log_error_errno(r, "Failed to read session fd from D-Bus reply: %m");
+
+        dbus_session_fd = fcntl(dbus_fd, F_DUPFD_CLOEXEC, 3);
+        if (dbus_session_fd < 0)
+                return log_error_errno(errno, "Failed to dup D-Bus session fd: %m");
+
+        dbus_session_memfd = memfd_new_and_seal("dbus-session-test", SESSION_MEMFD_DATA, strlen(SESSION_MEMFD_DATA));
+        if (dbus_session_memfd < 0)
+                return log_error_errno(dbus_session_memfd, "Failed to create D-Bus session memfd: %m");
+
+        r = luo_session_preserve_fd(dbus_session_fd, dbus_session_memfd, SESSION_MEMFD_TOKEN);
+        if (r < 0)
+                return log_error_errno(r, "Failed to preserve memfd in D-Bus session: %m");
+
+        r = sd_pid_notify_with_fds(0, false, "FDSTORE=1\nFDNAME=luosession-dbus", &dbus_session_fd, 1);
+        if (r < 0)
+                return log_error_errno(r, "Failed to store D-Bus session fd in fd store: %m");
+        TAKE_FD(dbus_session_fd);
+
+        log_info("Stored LUO session with memfd from D-Bus in fd store.");
         return 0;
 }
 
@@ -126,6 +233,92 @@ static int do_check(void) {
         }
 
         log_info("All fd store checks passed.");
+
+        /* Also verify the LUO session fd survived and its memfd content is intact */
+        int session_fd = -EBADF;
+        STRV_FOREACH(name, names) {
+                int idx = (int) (name - names);
+                if (idx >= n_fds)
+                        break;
+                if (streq(*name, "luosession")) {
+                        session_fd = SD_LISTEN_FDS_START + idx;
+                        break;
+                }
+        }
+
+        if (session_fd < 0)
+                return log_error_errno(SYNTHETIC_ERRNO(ENOENT),
+                                       "LUO session fd 'luosession' not found in fd store!");
+
+        r = fd_is_luo_session(session_fd);
+        if (r < 0)
+                return log_error_errno(r, "Failed to check if fd is LUO session: %m");
+        if (r == 0)
+                return log_error_errno(SYNTHETIC_ERRNO(EBADMSG),
+                                       "fd 'luosession' is not a LUO session!");
+
+        _cleanup_close_ int session_memfd = luo_session_retrieve_fd(session_fd, SESSION_MEMFD_TOKEN);
+        if (session_memfd < 0)
+                return log_error_errno(session_memfd, "Failed to retrieve memfd from session: %m");
+
+        char sbuf[256];
+        if (lseek(session_memfd, 0, SEEK_SET) < 0)
+                return log_error_errno(errno, "Failed to seek session memfd: %m");
+
+        ssize_t sn = read(session_memfd, sbuf, sizeof(sbuf) - 1);
+        if (sn < 0)
+                return log_error_errno(errno, "Failed to read session memfd: %m");
+        sbuf[sn] = '\0';
+
+        if (!streq(sbuf, SESSION_MEMFD_DATA))
+                return log_error_errno(SYNTHETIC_ERRNO(EBADMSG),
+                                       "Session memfd content mismatch: expected '%s', got '%s'",
+                                       SESSION_MEMFD_DATA, sbuf);
+
+        log_info("Verified LUO session memfd from varlink content matches.");
+
+        /* Also verify the D-Bus-allocated LUO session */
+        int dbus_session_fd = -EBADF;
+        STRV_FOREACH(name, names) {
+                int idx = (int) (name - names);
+                if (idx >= n_fds)
+                        break;
+                if (streq(*name, "luosession-dbus")) {
+                        dbus_session_fd = SD_LISTEN_FDS_START + idx;
+                        break;
+                }
+        }
+
+        if (dbus_session_fd < 0)
+                return log_error_errno(SYNTHETIC_ERRNO(ENOENT),
+                                       "D-Bus LUO session fd 'luosession-dbus' not found in fd store!");
+
+        r = fd_is_luo_session(dbus_session_fd);
+        if (r < 0)
+                return log_error_errno(r, "Failed to check if D-Bus fd is LUO session: %m");
+        if (r == 0)
+                return log_error_errno(SYNTHETIC_ERRNO(EBADMSG),
+                                       "fd 'luosession-dbus' is not a LUO session!");
+
+        _cleanup_close_ int dbus_memfd = luo_session_retrieve_fd(dbus_session_fd, SESSION_MEMFD_TOKEN);
+        if (dbus_memfd < 0)
+                return log_error_errno(dbus_memfd, "Failed to retrieve memfd from D-Bus session: %m");
+
+        char dbuf[256];
+        if (lseek(dbus_memfd, 0, SEEK_SET) < 0)
+                return log_error_errno(errno, "Failed to seek D-Bus session memfd: %m");
+
+        ssize_t dn = read(dbus_memfd, dbuf, sizeof(dbuf) - 1);
+        if (dn < 0)
+                return log_error_errno(errno, "Failed to read D-Bus session memfd: %m");
+        dbuf[dn] = '\0';
+
+        if (!streq(dbuf, SESSION_MEMFD_DATA))
+                return log_error_errno(SYNTHETIC_ERRNO(EBADMSG),
+                                       "D-Bus session memfd content mismatch: expected '%s', got '%s'",
+                                       SESSION_MEMFD_DATA, dbuf);
+
+        log_info("Verified LUO session memfd from D-Bus content matches.");
         return 0;
 }
 

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+#include <linux/liveupdate.h>
 #include <sys/prctl.h>
 
 #include "sd-bus.h"
@@ -11,10 +12,13 @@
 #include "build.h"
 #include "bus-error.h"
 #include "bus-polkit.h"
+#include "cgroup.h"
 #include "confidential-virt.h"
 #include "errno-util.h"
+#include "fd-util.h"
 #include "glyph-util.h"
 #include "json-util.h"
+#include "luo-util.h"
 #include "manager.h"
 #include "path-util.h"
 #include "pidref.h"
@@ -472,4 +476,84 @@ int vl_method_kexec(sd_varlink *link, sd_json_variant *parameters, sd_varlink_me
 
 int vl_method_soft_reboot(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
         return manager_do_set_objective(link, parameters, MANAGER_SOFT_REBOOT, "reboot", /* can_do_root= */ true);
+}
+
+int vl_method_allocate_luo_session(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
+        Manager *m = ASSERT_PTR(sd_varlink_get_userdata(link));
+        _cleanup_(pidref_done) PidRef pidref = PIDREF_NULL;
+        _cleanup_free_ char *cgroup_path = NULL, *session_name = NULL;
+        _cleanup_close_ int device_fd = -EBADF, session_fd = -EBADF;
+
+        struct {
+                const char *name;
+        } p = {};
+
+        static const sd_json_dispatch_field dispatch_table[] = {
+                { "name", SD_JSON_VARIANT_STRING, sd_json_dispatch_const_string, offsetof(typeof(p), name), SD_JSON_MANDATORY },
+                {}
+        };
+
+        Unit *u;
+        int r, fd_idx;
+
+        assert(link);
+
+        if (!MANAGER_IS_SYSTEM(m))
+                return sd_varlink_error(link, SD_VARLINK_ERROR_METHOD_NOT_IMPLEMENTED, NULL);
+
+        r = sd_varlink_dispatch(link, parameters, dispatch_table, &p);
+        if (r != 0)
+                return r;
+
+        /* Adding new selinux labels is hard. Squinting a bit, accessing a LUO session allows changing the
+         * state of the system, and 'reload' allows changing the state of the system. Close enough. */
+        r = mac_selinux_access_check_varlink(link, "reload");
+        if (r < 0)
+                return r;
+
+        r = varlink_verify_polkit_async(
+                        link,
+                        m->system_bus,
+                        "org.freedesktop.systemd1.allocate-luo-session",
+                        /* details= */ NULL,
+                        &m->polkit_registry);
+        if (r <= 0)
+                return r;
+
+        /* Identify the calling service by its PID */
+        r = varlink_get_peer_pidref(link, &pidref);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to get peer pidref: %m");
+
+        u = manager_get_unit_by_pidref(m, &pidref);
+        if (!u)
+                return sd_varlink_error(link, SD_VARLINK_ERROR_PERMISSION_DENIED, NULL);
+
+        r = unit_get_cgroup_path_with_fallback(u, &cgroup_path);
+        if (r < 0)
+                return log_debug_errno(r, "Failed to get cgroup path for unit '%s': %m", u->id);
+
+        /* Build session name: "<cgroup_path>/<name>", truncated to fit the kernel limit */
+        session_name = strjoin(cgroup_path, "/", p.name);
+        if (!session_name)
+                return log_oom();
+
+        if (strlen(session_name) >= LIVEUPDATE_SESSION_NAME_LENGTH)
+                return sd_varlink_error(link, SD_VARLINK_ERROR_INVALID_PARAMETER, NULL);
+
+        device_fd = luo_open_device();
+        if (device_fd < 0)
+                return log_debug_errno(device_fd, "Failed to open /dev/liveupdate: %m");
+
+        session_fd = luo_create_session(device_fd, session_name);
+        if (session_fd < 0)
+                return log_debug_errno(session_fd, "Failed to create LUO session '%s': %m", session_name);
+
+        fd_idx = sd_varlink_push_fd(link, TAKE_FD(session_fd));
+        if (fd_idx < 0)
+                return log_debug_errno(fd_idx, "Failed to push LUO session fd over varlink: %m");
+
+        log_debug("Allocated LUO session '%s' for unit '%s'.", session_name, u->id);
+
+        return sd_varlink_replybo(link, SD_JSON_BUILD_PAIR_INTEGER("sessionFileDescriptor", fd_idx));
 }
