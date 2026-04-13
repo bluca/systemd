@@ -212,6 +212,13 @@ static SD_VARLINK_DEFINE_METHOD(
                 SD_VARLINK_FIELD_COMMENT("New root directory for the soft reboot"),
                 SD_VARLINK_DEFINE_INPUT(root, SD_VARLINK_STRING, SD_VARLINK_NULLABLE));
 
+static SD_VARLINK_DEFINE_METHOD(
+                AllocateLUOSession,
+                SD_VARLINK_FIELD_COMMENT("Name suffix for the LUO session"),
+                SD_VARLINK_DEFINE_INPUT(name, SD_VARLINK_STRING, 0),
+                SD_VARLINK_FIELD_COMMENT("File descriptor index for the LUO session"),
+                SD_VARLINK_DEFINE_OUTPUT(sessionFileDescriptor, SD_VARLINK_INT, 0));
+
 static SD_VARLINK_DEFINE_ERROR(RateLimitReached);
 
 SD_VARLINK_DEFINE_INTERFACE(
@@ -234,6 +241,8 @@ SD_VARLINK_DEFINE_INTERFACE(
                 &vl_method_KExec,
                 SD_VARLINK_SYMBOL_COMMENT("Soft-reboot the userspace"),
                 &vl_method_SoftReboot,
+                SD_VARLINK_SYMBOL_COMMENT("Allocate a LUO session for the calling service"),
+                &vl_method_AllocateLUOSession,
                 &vl_error_RateLimitReached,
                 &vl_type_ManagerContext,
                 &vl_type_ManagerRuntime,

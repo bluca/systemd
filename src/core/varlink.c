@@ -368,7 +368,7 @@ int manager_setup_varlink_server(Manager *m) {
 
         sd_varlink_server_flags_t flags = SD_VARLINK_SERVER_INHERIT_USERDATA;
         if (MANAGER_IS_SYSTEM(m))
-                flags |= SD_VARLINK_SERVER_ACCOUNT_UID;
+                flags |= SD_VARLINK_SERVER_ACCOUNT_UID|SD_VARLINK_SERVER_ALLOW_FD_PASSING_OUTPUT;
 
         r = varlink_server_new(&s, flags, m);
         if (r < 0)
@@ -395,6 +395,7 @@ int manager_setup_varlink_server(Manager *m) {
                         "io.systemd.Manager.Halt", vl_method_halt,
                         "io.systemd.Manager.KExec", vl_method_kexec,
                         "io.systemd.Manager.SoftReboot", vl_method_soft_reboot,
+                        "io.systemd.Manager.AllocateLUOSession", vl_method_allocate_luo_session,
                         "io.systemd.Unit.List", vl_method_list_units,
                         "io.systemd.Unit.SetProperties", vl_method_set_unit_properties,
                         "io.systemd.service.Ping", varlink_method_ping,

@@ -11,18 +11,23 @@
 #include "build.h"
 #include "bus-error.h"
 #include "bus-polkit.h"
+#include "cgroup.h"
 #include "confidential-virt.h"
 #include "errno-util.h"
+#include "fd-util.h"
 #include "glyph-util.h"
 #include "json-util.h"
+#include "luo-util.h"
 #include "manager.h"
 #include "path-util.h"
 #include "pidref.h"
 #include "selinux-access.h"
 #include "set.h"
+#include "string-util.h"
 #include "strv.h"
 #include "syslog-util.h"
 #include "taint.h"
+#include "utf8.h"
 #include "version.h"
 #include "varlink-common.h"
 #include "varlink-manager.h"
@@ -472,4 +477,63 @@ int vl_method_kexec(sd_varlink *link, sd_json_variant *parameters, sd_varlink_me
 
 int vl_method_soft_reboot(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
         return manager_do_set_objective(link, parameters, MANAGER_SOFT_REBOOT, "reboot", /* can_do_root= */ true);
+}
+
+int vl_method_allocate_luo_session(sd_varlink *link, sd_json_variant *parameters, sd_varlink_method_flags_t flags, void *userdata) {
+        Manager *m = ASSERT_PTR(sd_varlink_get_userdata(link));
+        _cleanup_close_ int device_fd = -EBADF, session_fd = -EBADF;
+
+        struct {
+                const char *name;
+        } p = {};
+
+        static const sd_json_dispatch_field dispatch_table[] = {
+                { "name", SD_JSON_VARIANT_STRING, sd_json_dispatch_const_string, offsetof(typeof(p), name), SD_JSON_MANDATORY },
+                {}
+        };
+
+        int r, fd_idx;
+
+        assert(link);
+
+        if (!MANAGER_IS_SYSTEM(m))
+                return sd_varlink_error(link, SD_VARLINK_ERROR_METHOD_NOT_IMPLEMENTED, NULL);
+
+        r = sd_varlink_dispatch(link, parameters, dispatch_table, &p);
+        if (r != 0)
+                return r;
+
+        if (isempty(p.name) || !string_is_safe(p.name) || !utf8_is_valid(p.name))
+                return sd_varlink_error(link, SD_VARLINK_ERROR_INVALID_PARAMETER, NULL);
+
+        /* Adding new selinux labels is hard. Squinting a bit, accessing a LUO session allows changing the
+         * state of the system, and 'reload' allows changing the state of the system. Close enough. */
+        r = mac_selinux_access_check_varlink(link, "reload");
+        if (r < 0)
+                return r;
+
+        r = varlink_verify_polkit_async(
+                        link,
+                        m->system_bus,
+                        "org.freedesktop.systemd1.allocate-luo-session",
+                        /* details= */ NULL,
+                        &m->polkit_registry);
+        if (r <= 0)
+                return r;
+
+        device_fd = luo_open_device();
+        if (device_fd < 0)
+                return log_debug_errno(device_fd, "Failed to open /dev/liveupdate: %m");
+
+        session_fd = luo_create_session(device_fd, p.name);
+        if (session_fd < 0)
+                return log_debug_errno(session_fd, "Failed to create LUO session '%s': %m", p.name);
+
+        fd_idx = sd_varlink_push_fd(link, TAKE_FD(session_fd));
+        if (fd_idx < 0)
+                return log_debug_errno(fd_idx, "Failed to push LUO session fd over varlink: %m");
+
+        log_debug("Allocated LUO session '%s'.", p.name);
+
+        return sd_varlink_replybo(link, SD_JSON_BUILD_PAIR_INTEGER("sessionFileDescriptor", fd_idx));
 }

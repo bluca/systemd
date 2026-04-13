@@ -38,11 +38,12 @@ EOF
 
 if ! grep -q systemd.test.luo_second_boot=1 /proc/cmdline; then
     # Create memfds with known content and push them to our fd store.
+    # Also request a LUO session, store a memfd in it, and push the session fd to the fd store.
     /usr/lib/systemd/tests/unit-tests/manual/test-luo store
 
-    # Complete and start the late unit
+    # Complete and start the late unit — use a different session name prefix to avoid collisions
     cat >>/run/systemd/system/TEST-90-LIVEUPDATE-late.service <<EOF
-ExecStart=/usr/lib/systemd/tests/unit-tests/manual/test-luo store
+ExecStart=/usr/lib/systemd/tests/unit-tests/manual/test-luo store late
 EOF
     systemctl start TEST-90-LIVEUPDATE-late.service
 
@@ -88,12 +89,12 @@ EOF
     systemctl kexec
     exit 0
 else
-    # Verify that the fd store of the main test service survived the kexec.
+    # Verify that the fd store survived the kexec (memfds + LUO session).
     /usr/lib/systemd/tests/unit-tests/manual/test-luo check
 
     # Complete and start the late unit
     cat >>/run/systemd/system/TEST-90-LIVEUPDATE-late.service <<EOF
-ExecStart=/usr/lib/systemd/tests/unit-tests/manual/test-luo check
+ExecStart=/usr/lib/systemd/tests/unit-tests/manual/test-luo check late
 EOF
     systemctl start TEST-90-LIVEUPDATE-late.service
 fi
