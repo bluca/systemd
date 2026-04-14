@@ -61,6 +61,17 @@ FileDescriptorStoreMax=${maxfd}
 FileDescriptorStorePreserve=yes
 ExecStart=${cmd}
 EOF
+
+    # Create a unit with LUOSession= to test server-managed session lifecycle
+    cat >"/run/systemd/system/TEST-91-LIVEUPDATE-session.service" <<EOF
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+FileDescriptorStoreMax=10
+FileDescriptorStorePreserve=yes
+LUOSession=test-session-1 test-session-2
+ExecStart=/usr/lib/systemd/tests/unit-tests/manual/test-luo check-sessions test-session-1 test-session-2
+EOF
 }
 
 if grep -qw luo_nboot=1 /proc/cmdline; then
@@ -138,6 +149,11 @@ EOF
     n_fds=$(systemctl show -P NFileDescriptorStore TEST-91-LIVEUPDATE-late-zerofds.service)
     test "$n_fds" -eq 0
     systemctl start TEST-91-LIVEUPDATE-late-zerofds.service
+
+    # Verify the late unit's LUO session was restored
+    n_fds=$(systemctl show -P NFileDescriptorStore TEST-91-LIVEUPDATE-late.service)
+    echo "Late unit fd store count after kexec: $n_fds"
+    test "$n_fds" -ge 2
 else
     # Create memfds with known content and push them to our fd store.
     # Also request a LUO session, store a memfd in it, and push the session fd to the fd store.
@@ -187,6 +203,12 @@ EOF
         n_fds=$(systemctl show -P NFileDescriptorStore "TEST-91-LIVEUPDATE-${variant}.service")
         test "$n_fds" -eq 3
     done
+
+    # Test LUOSession= setting — start the unit and verify sessions are in its fd store
+    systemctl start TEST-91-LIVEUPDATE-session.service
+    n_fds=$(systemctl show -P NFileDescriptorStore TEST-91-LIVEUPDATE-session.service)
+    echo "Session unit fd store count: $n_fds"
+    test "$n_fds" -eq 2  # test-session-1 and test-session-2
 
     # 'systemctl kexec' auto-loads the default boot entry (i.e. the booted UKI,
     # via EFI LoaderEntrySelected/LoaderEntryDefault). Append a marker to the
