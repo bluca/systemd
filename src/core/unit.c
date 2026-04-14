@@ -39,6 +39,7 @@
 #include "load-fragment.h"
 #include "log.h"
 #include "luo.h"
+#include "service.h"
 #include "logarithm.h"
 #include "mkdir-label.h"
 #include "manager.h"
@@ -1745,8 +1746,12 @@ int unit_load(Unit *u) {
                 unit_invalidate_cgroup_members_masks(u);
 
                 /* Check if there are any LUO held fds for this unit, in case it was loaded after boot */
-                if (u->type == UNIT_SERVICE)
+                if (u->type == UNIT_SERVICE) {
                         (void) manager_luo_try_restore_held_fds_for_unit(u);
+
+                        /* Create or retrieve LUO sessions configured via LUOSession= */
+                        service_luo_create_sessions(SERVICE(u));
+                }
         }
 
         assert((u->load_state != UNIT_MERGED) == !u->merged_into);

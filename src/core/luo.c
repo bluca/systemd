@@ -246,6 +246,22 @@ int manager_luo_restore_fd_stores(Manager *m) {
                                                           cgroup_path, fdname, idx);
                                         continue;
                                 }
+                        } else if (streq(type, "luo_session")) {
+                                sd_json_variant *sname_json = sd_json_variant_by_key(entry, "session_name");
+                                if (!sname_json || !sd_json_variant_is_string(sname_json)) {
+                                        log_warning("LUO mapping for cgroup '%s' fd '%s': missing or invalid session_name.", cgroup_path, fdname);
+                                        continue;
+                                }
+
+                                const char *sname = sd_json_variant_string(sname_json);
+                                fd = luo_retrieve_session(device_fd, sname);
+                                if (fd < 0) {
+                                        log_warning_errno(fd, "Failed to retrieve LUO session '%s' for cgroup '%s' name '%s': %m",
+                                                          sname, cgroup_path, fdname);
+                                        continue;
+                                }
+
+                                log_info("Retrieved LUO session '%s' for unit fd store '%s'.", sname, fdname);
                         } else {
                                 log_warning("LUO mapping for cgroup '%s' fd '%s': unknown type '%s', skipping.",
                                             cgroup_path, fdname, type);
@@ -484,17 +500,29 @@ int manager_luo_serialize_fd_stores(Manager *m, FILE **ret_f, FDSet **ret_fds) {
                 }
 
                 LIST_FOREACH(fd_store, fs, s->fd_store) {
+                        _cleanup_free_ char *session_name = NULL;
                         int copy;
 
                         copy = fdset_put_dup(fds, fs->fd);
                         if (copy < 0)
                                 return log_error_errno(copy, "Failed to duplicate fd for LUO serialization: %m");
 
-                        r = sd_json_variant_append_arraybo(
-                                        &entries,
-                                        SD_JSON_BUILD_PAIR_STRING("type", "fd"),
-                                        SD_JSON_BUILD_PAIR_STRING("name", fs->fdname),
-                                        SD_JSON_BUILD_PAIR_INTEGER("fd_index", copy));
+                        /* Check if this fd is itself a LUO session, as those cannot be nested and need
+                         * special handling */
+                        r = fd_get_luo_session_name(fs->fd, &session_name);
+                        if (r >= 0)
+                                r = sd_json_variant_append_arraybo(
+                                                &entries,
+                                                SD_JSON_BUILD_PAIR_STRING("type", "luo_session"),
+                                                SD_JSON_BUILD_PAIR_STRING("name", fs->fdname),
+                                                SD_JSON_BUILD_PAIR_INTEGER("fd_index", copy),
+                                                SD_JSON_BUILD_PAIR_STRING("session_name", session_name));
+                        else
+                                r = sd_json_variant_append_arraybo(
+                                                &entries,
+                                                SD_JSON_BUILD_PAIR_STRING("type", "fd"),
+                                                SD_JSON_BUILD_PAIR_STRING("name", fs->fdname),
+                                                SD_JSON_BUILD_PAIR_INTEGER("fd_index", copy));
                         if (r < 0)
                                 return log_error_errno(r, "Failed to build JSON for LUO serialization: %m");
 

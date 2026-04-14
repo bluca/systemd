@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <linux/audit.h>        /* IWYU pragma: keep */
+#include <linux/liveupdate.h>
 #include <math.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "sd-bus.h"
+#include "sd-id128.h"
 #include "sd-messages.h"
 
 #include "alloc-util.h"
@@ -30,8 +32,10 @@
 #include "fileio.h"
 #include "format-util.h"
 #include "glyph-util.h"
+#include "hexdecoct.h"
 #include "image-policy.h"
 #include "log.h"
+#include "luo-util.h"
 #include "manager.h"
 #include "mount-util.h"
 #include "namespace.h"
@@ -46,6 +50,7 @@
 #include "serialize.h"
 #include "service.h"
 #include "signal-util.h"
+#include "siphash24.h"
 #include "socket.h"
 #include "special.h"
 #include "stat-util.h"
@@ -580,6 +585,8 @@ static void service_done(Unit *u) {
         service_release_extra_fds(s);
         s->root_directory_fd = asynchronous_close(s->root_directory_fd);
 
+        s->luo_sessions = strv_free(s->luo_sessions);
+
         s->mount_request = sd_bus_message_unref(s->mount_request);
 }
 
@@ -602,6 +609,36 @@ static int on_fd_store_io(sd_event_source *e, int fd, uint32_t revents, void *us
         return 0;
 }
 
+/* Build a deterministic LUO session name from the unit's cgroup path and the configured
+ * session name. The full path "<cgroup_path>/<name>" is hashed with siphash to produce
+ * a fixed-length hex string that always fits within LIVEUPDATE_SESSION_NAME_LENGTH. */
+static int service_build_luo_session_name(Service *s, const char *name, char **ret) {
+        _cleanup_free_ char *full = NULL, *cgroup_path = NULL;
+        int r;
+
+        assert(s);
+        assert(name);
+        assert(ret);
+
+        r = unit_get_cgroup_path_with_fallback(UNIT(s), &cgroup_path);
+        if (r < 0)
+                return r;
+
+        full = strjoin(cgroup_path, "/", name);
+        if (!full)
+                return -ENOMEM;
+
+        static const sd_id128_t hash_key = SD_ID128_MAKE(7a,3e,f1,c2,b8,4d,9f,0a,e5,6b,d3,17,c4,82,a9,5e);
+        uint64_t h = htole64(siphash24_string(full, hash_key.bytes));
+
+        char *result = hexmem(&h, sizeof(h));
+        if (!result)
+                return -ENOMEM;
+
+        *ret = result;
+        return 0;
+}
+
 int service_add_fd_store(Service *s, int fd_in, const char *name, bool do_poll) {
         _cleanup_(service_fd_store_unlinkp) ServiceFDStore *fs = NULL;
         _cleanup_(asynchronous_closep) int fd = ASSERT_FD(fd_in);
@@ -617,6 +654,36 @@ int service_add_fd_store(Service *s, int fd_in, const char *name, bool do_poll) 
 
         log_unit_debug(UNIT(s), "Trying to stash fd for dev=" DEVNUM_FORMAT_STR "/inode=%" PRIu64,
                        DEVNUM_FORMAT_VAL(st.st_dev), (uint64_t) st.st_ino);
+
+        /* If this fd is a LUO session, validate that its FDNAME matches one of the configured
+         * LUOSession= entries, and that the actual kernel session name matches what we'd build
+         * for that entry. This prevents a service from storing arbitrary sessions. */
+        r = fd_is_luo_session(fd);
+        if (r > 0) {
+                if (!name)
+                        return log_unit_warning_errno(UNIT(s), SYNTHETIC_ERRNO(EACCES),
+                                        "Refused to store LUO session fd without an explicit FDNAME.");
+
+                if (!strv_contains(s->luo_sessions, name))
+                        return log_unit_warning_errno(UNIT(s), SYNTHETIC_ERRNO(EACCES),
+                                        "Refused to store LUO session fd: fd name '%s' not in LUOSession= list.",
+                                        name);
+
+                _cleanup_free_ char *expected_luo_name = NULL, *actual_luo_name = NULL;
+                r = service_build_luo_session_name(s, name, &expected_luo_name);
+                if (r < 0)
+                        return r;
+
+                r = fd_get_luo_session_name(fd, &actual_luo_name);
+                if (r < 0)
+                        return log_unit_warning_errno(UNIT(s), r,
+                                        "Failed to get LUO session name from fd: %m");
+
+                if (!streq(expected_luo_name, actual_luo_name))
+                        return log_unit_warning_errno(UNIT(s), SYNTHETIC_ERRNO(EACCES),
+                                        "Refused to store LUO session fd: kernel name '%s' does not match expected '%s'.",
+                                        actual_luo_name, expected_luo_name);
+        }
 
         if (s->n_fd_store >= s->n_fd_store_max)
                 /* Our store is full.  Use this errno rather than E[NM]FILE to distinguish from the case
@@ -685,6 +752,63 @@ static int service_add_fd_store_set(Service *s, FDSet *fds, const char *name, bo
         }
 
         return 0;
+}
+
+void service_luo_create_sessions(Service *s) {
+        int r;
+
+        assert(s);
+
+        if (strv_isempty(s->luo_sessions))
+                return;
+
+        _cleanup_close_ int device_fd = luo_open_device();
+        if (device_fd < 0) {
+                if (device_fd == -ENOENT)
+                        log_unit_debug(UNIT(s), "No /dev/liveupdate, skipping LUO session.");
+                else
+                        log_unit_warning_errno(UNIT(s), device_fd, "Failed to open /dev/liveupdate: %m");
+                return;
+        }
+
+        STRV_FOREACH(session_name, s->luo_sessions) {
+                _cleanup_close_ int session_fd = -EBADF;
+                _cleanup_free_ char *luo_name = NULL;
+
+                r = service_build_luo_session_name(s, *session_name, &luo_name);
+                if (r < 0) {
+                        log_unit_warning_errno(UNIT(s), r, "Failed to build LUO session name for '%s': %m", *session_name);
+                        continue;
+                }
+
+                /* Skip if already in fd store */
+                LIST_FOREACH(fd_store, fs, s->fd_store)
+                        if (streq(fs->fdname, *session_name))
+                                continue;
+
+                /* Try to retrieve an existing session first (e.g. after kexec) */
+                session_fd = luo_retrieve_session(device_fd, luo_name);
+                if (session_fd == -ENOENT) {
+                        /* No existing session, create a new one */
+                        session_fd = luo_create_session(device_fd, luo_name);
+                        if (session_fd < 0) {
+                                log_unit_warning_errno(UNIT(s), session_fd,
+                                                       "Failed to create LUO session '%s': %m", luo_name);
+                                continue;
+                        }
+                        log_unit_debug(UNIT(s), "Created new LUO session '%s'.", luo_name);
+                } else if (session_fd < 0) {
+                        log_unit_warning_errno(UNIT(s), session_fd,
+                                               "Failed to retrieve LUO session '%s': %m", luo_name);
+                        continue;
+                } else
+                        log_unit_debug(UNIT(s), "Retrieved existing LUO session '%s'.", luo_name);
+
+                r = service_add_fd_store(s, TAKE_FD(session_fd), *session_name, /* do_poll= */ false);
+                if (r < 0)
+                        log_unit_warning_errno(UNIT(s), r,
+                                               "Failed to add LUO session '%s' to fd store: %m", *session_name);
+        }
 }
 
 static void service_remove_fd_store(Service *s, const char *name) {

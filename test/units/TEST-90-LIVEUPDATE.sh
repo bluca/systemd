@@ -34,11 +34,29 @@ Type=oneshot
 RemainAfterExit=yes
 FileDescriptorStoreMax=20
 FileDescriptorStorePreserve=yes
+LUOSession=late-session-1
+EOF
+
+# Create a unit with LUOSession= to test server-managed session lifecycle
+cat >/run/systemd/system/TEST-90-LIVEUPDATE-session.service <<EOF
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+FileDescriptorStoreMax=10
+FileDescriptorStorePreserve=yes
+LUOSession=test-session-1 test-session-2
+ExecStart=/usr/lib/systemd/tests/unit-tests/manual/test-luo check-sessions test-session-1 test-session-2
 EOF
 
 if ! grep -q systemd.test.luo_second_boot=1 /proc/cmdline; then
     # Create memfds with known content and push them to our fd store.
     /usr/lib/systemd/tests/unit-tests/manual/test-luo store
+
+    # Test LUOSession= setting — start the unit and verify sessions are in its fd store
+    systemctl start TEST-90-LIVEUPDATE-session.service
+    n_fds=$(systemctl show -P NFileDescriptorStore TEST-90-LIVEUPDATE-session.service)
+    echo "Session unit fd store count: $n_fds"
+    test "$n_fds" -eq 2  # test-session-1 and test-session-2
 
     # Complete and start the late unit
     cat >>/run/systemd/system/TEST-90-LIVEUPDATE-late.service <<EOF
@@ -46,10 +64,10 @@ ExecStart=/usr/lib/systemd/tests/unit-tests/manual/test-luo store
 EOF
     systemctl start TEST-90-LIVEUPDATE-late.service
 
-    # Verify the late unit has fds in its store
+    # Verify the late unit has fds in its store (memfds + LUO session)
     n_fds=$(systemctl show -P NFileDescriptorStore TEST-90-LIVEUPDATE-late.service)
     echo "Late unit fd store count after store: $n_fds"
-    test "$n_fds" -ge 1
+    test "$n_fds" -ge 2  # at least the memfds + late-session-1
 
     # Extract kernel and initrd from the booted UKI
     CURRENT_UKI=$(bootctl --print-stub-path)
@@ -91,11 +109,40 @@ else
     # Verify that the fd store of the main test service survived the kexec.
     /usr/lib/systemd/tests/unit-tests/manual/test-luo check
 
-    # Complete and start the late unit
+    # Test LUOSession= — re-create the unit (lost on kexec), start it, and verify
+    # that the sessions are retrieved from the kernel (not created anew)
+    cat >/run/systemd/system/TEST-90-LIVEUPDATE-session.service <<SESS
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+FileDescriptorStoreMax=10
+FileDescriptorStorePreserve=yes
+LUOSession=test-session-1 test-session-2
+ExecStart=/usr/lib/systemd/tests/unit-tests/manual/test-luo check-sessions test-session-1 test-session-2
+SESS
+    systemctl daemon-reload
+    systemctl start TEST-90-LIVEUPDATE-session.service
+    n_fds=$(systemctl show -P NFileDescriptorStore TEST-90-LIVEUPDATE-session.service)
+    echo "Session unit fd store count after kexec: $n_fds"
+    test "$n_fds" -eq 2
+
+    echo "LUOSession= setting verified across kexec!"
+
+    # Complete and start the late unit — its LUOSession=late-session-1 should be
+    # retrieved from the kernel (the session was preserved across kexec).
+    # The unit runs test-luo check to verify memfds.
     cat >>/run/systemd/system/TEST-90-LIVEUPDATE-late.service <<EOF
 ExecStart=/usr/lib/systemd/tests/unit-tests/manual/test-luo check
+ExecStart=/usr/lib/systemd/tests/unit-tests/manual/test-luo check-sessions late-session-1
 EOF
     systemctl start TEST-90-LIVEUPDATE-late.service
+
+    # Verify the late unit's LUO session was restored
+    n_fds=$(systemctl show -P NFileDescriptorStore TEST-90-LIVEUPDATE-late.service)
+    echo "Late unit fd store count after kexec: $n_fds"
+    test "$n_fds" -ge 2  # memfds + late-session-1
+
+    echo "Late unit LUOSession= verified across kexec!"
 fi
 
 touch /testok

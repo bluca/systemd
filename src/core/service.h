@@ -230,6 +230,8 @@ typedef struct Service {
         unsigned n_fd_store_max;
         ExecPreserveMode fd_store_preserve_mode;
 
+        char **luo_sessions; /* LUOSession= setting — list of session names to create/manage */
+
         int stdin_fd;
         int stdout_fd;
         int stderr_fd;
@@ -280,6 +282,7 @@ int service_set_socket_fd(Service *s, int fd, struct Socket *socket, struct Sock
 void service_release_socket_fd(Service *s);
 
 int service_add_fd_store(Service *s, int fd_in, const char *name, bool do_poll);
+void service_luo_create_sessions(Service *s);
 
 ServiceExtraFD* service_extra_fd_free(ServiceExtraFD *fd);
 
