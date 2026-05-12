@@ -83,11 +83,12 @@ if conf.get('BPF_FRAMEWORK') == 1
         endforeach
 endif
 
-# restrict-fsaccess uses vmlinux.h, so it is only built when HAVE_VMLINUX_H is
-# set (which implies BPF_FRAMEWORK). On systems without BTF / bpftool / a
-# provided vmlinux.h the skeleton isn't generated and bpf_programs_by_name
-# doesn't carry this entry.
-if conf.get('HAVE_VMLINUX_H') == 1
+# restrict-fsaccess uses 'enum lsm_integrity_type' from a recent vmlinux.h, so
+# it is only built when HAVE_LSM_INTEGRITY_TYPE is set (which implies
+# HAVE_VMLINUX_H and BPF_FRAMEWORK). On systems without BTF / bpftool / a
+# recent enough provided vmlinux.h the skeleton isn't generated and
+# bpf_programs_by_name doesn't carry this entry.
+if conf.get('HAVE_LSM_INTEGRITY_TYPE') == 1
         libcore_sources += bpf_programs_by_name['restrict-fsaccess']
 endif
 

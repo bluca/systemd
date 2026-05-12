@@ -313,6 +313,19 @@ conf.set10('HAVE_VMLINUX_H', use_provided_vmlinux_h or use_generated_vmlinux_h)
 
 conf.set10('ENABLE_SYSCTL_BPF', conf.get('HAVE_VMLINUX_H') == 1 and libbpf.version().version_compare('>= 0.7'))
 
+# Some BPF programs require a more recent kernel than the baseline, for example for LSM integrity 6.11
+# is needed. Add checks here as needed, and skip the features for older targets.
+have_lsm_integrity_type = false
+if use_generated_vmlinux_h
+        # When the builder generates from a local kernel assume it is set up as needed
+        have_lsm_integrity_type = true
+elif use_provided_vmlinux_h
+        have_lsm_integrity_type = cc.compiles(
+                '#include "@0@"\nenum lsm_integrity_type _t;\n'.format(provided_vmlinux_h_path),
+                name : 'enum lsm_integrity_type in vmlinux.h')
+endif
+conf.set10('HAVE_LSM_INTEGRITY_TYPE', have_lsm_integrity_type)
+
 bpf_programs = [
         {
                 'source' : files('bind-iface.bpf.c'),
@@ -320,7 +333,7 @@ bpf_programs = [
         },
         {
                 'source' : files('restrict-fsaccess.bpf.c'),
-                'condition' : 'HAVE_VMLINUX_H',
+                'condition' : 'HAVE_LSM_INTEGRITY_TYPE',
                 'depends' : vmlinux_h_dependency,
         },
         {
