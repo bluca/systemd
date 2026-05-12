@@ -65,6 +65,7 @@ PACKAGES=(
     util-linux
     zstd
 )
+FEATURES=()
 COMPILER="${COMPILER:?}"
 COMPILER_VERSION="${COMPILER_VERSION:?}"
 LINKER="${LINKER:?}"
@@ -133,11 +134,14 @@ sudo rm -f /etc/apt/sources.list.d/microsoft-prod.{list,sources}
 if grep -q 'VERSION_CODENAME=jammy' /usr/lib/os-release; then
     sudo add-apt-repository -y --no-update ppa:upstream-systemd-ci/systemd-ci
     sudo add-apt-repository -y --no-update --enable-source
+    # Jammy's kernel is too old and there's no vmlinux.h
+    FEATURES+=("-Dbpf-framework=disabled")
 else
     # add-apt-repository --enable-source does not work on deb822 style sources.
     for f in /etc/apt/sources.list.d/*.sources; do
         sudo sed -i "s/Types: deb/Types: deb deb-src/g" "$f"
     done
+    FEATURES+=("-Dbpf-framework=enabled")
 fi
 sudo apt-get -y update
 sudo apt-get -y build-dep systemd
@@ -175,6 +179,7 @@ for args in "${ARGS[@]}"; do
          meson setup \
                -Dtests=unsafe -Dslow-tests=true -Dfuzz-tests=true --werror \
                -Dnobody-group=nogroup -Ddebug=false \
+               "${FEATURES[@]}" \
                $args build; then
 
         cat build/meson-logs/meson-log.txt
