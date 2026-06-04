@@ -14,6 +14,20 @@ ci:
         source_project: system:systemd
         source_package: systemd
         target_project: system:systemd:ci
+    - link_package:
+        source_project: system:systemd
+        source_package: particleos-debian
+        target_project: system:systemd:ci
+    - link_package:
+        source_project: system:systemd
+        source_package: particleos-fedora
+        target_project: system:systemd:ci
+    - set_flags:
+        flags:
+          - type: build
+            status: disable
+            project: system:systemd:ci
+            architecture: aarch64
   filters:
     event: pull_request
     branches:
