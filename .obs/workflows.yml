@@ -14,6 +14,42 @@ ci:
         source_project: system:systemd
         source_package: systemd
         target_project: system:systemd:ci
+    - link_package:
+        source_project: system:systemd
+        source_package: particleos-debian
+        target_project: system:systemd:ci
+    - link_package:
+        source_project: system:systemd
+        source_package: particleos-fedora
+        target_project: system:systemd:ci
+    - link_package:
+        source_project: system:systemd
+        source_package: uki-debian
+        target_project: system:systemd:ci
+    - link_package:
+        source_project: system:systemd
+        source_package: uki-fedora
+        target_project: system:systemd:ci
+    - set_flags:
+        flags:
+          # First disable all builds (including images linked in above)
+          - type: build
+            status: disable
+            project: system:systemd:ci
+          # Then add stronger override to disable aarch64 (trumps enablement below)
+          - type: build
+            status: disable
+            project: system:systemd:ci
+            architecture: aarch64
+          # Then enable systemd package builds
+          - type: build
+            status: disable
+            project: system:systemd:ci
+            package: systemd
+          # Finally enable public repository creation
+          - type: publish
+            status: enable
+            project: system:systemd:ci
   filters:
     event: pull_request
     branches:
