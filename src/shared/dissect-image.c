@@ -4730,8 +4730,10 @@ const char* mount_options_from_designator(const MountOptions *options, Partition
         return options->options[designator];
 }
 
-int mount_image_privately_interactively(
+int mount_image_privately_interactively_full(
+                int image_fd,
                 const char *image,
+                int loop_lock_operation,
                 const ImagePolicy *image_policy,
                 DissectImageFlags flags,
                 char **ret_directory,
@@ -4748,7 +4750,8 @@ int mount_image_privately_interactively(
          * is used by tools such as systemd-tmpfiles or systemd-firstboot to operate on some disk image
          * easily. */
 
-        assert(image);
+        assert(image_fd >= 0 || image);
+        assert(IN_SET(loop_lock_operation & ~LOCK_NB, LOCK_UN, LOCK_SH, LOCK_EX));
         assert(ret_loop_device);
 
         /* We intend to mount this right-away, hence add the partitions if needed and pin them. */
@@ -4759,13 +4762,24 @@ int mount_image_privately_interactively(
         if (r < 0)
                 return log_error_errno(r, "Failed to load root hash data: %m");
 
-        r = loop_device_make_by_path(
-                        image,
-                        FLAGS_SET(flags, DISSECT_IMAGE_DEVICE_READ_ONLY) ? O_RDONLY : -1,
-                        /* sector_size= */ UINT32_MAX,
-                        FLAGS_SET(flags, DISSECT_IMAGE_NO_PARTITION_TABLE) ? 0 : LO_FLAGS_PARTSCAN,
-                        LOCK_SH,
-                        &d);
+        if (image_fd >= 0)
+                r = loop_device_make(
+                                image_fd,
+                                FLAGS_SET(flags, DISSECT_IMAGE_DEVICE_READ_ONLY) ? O_RDONLY : -1,
+                                /* offset= */ 0,
+                                /* size= */ 0,
+                                /* sector_size= */ UINT32_MAX,
+                                FLAGS_SET(flags, DISSECT_IMAGE_NO_PARTITION_TABLE) ? 0 : LO_FLAGS_PARTSCAN,
+                                loop_lock_operation,
+                                &d);
+        else
+                r = loop_device_make_by_path(
+                                image,
+                                FLAGS_SET(flags, DISSECT_IMAGE_DEVICE_READ_ONLY) ? O_RDONLY : -1,
+                                /* sector_size= */ UINT32_MAX,
+                                FLAGS_SET(flags, DISSECT_IMAGE_NO_PARTITION_TABLE) ? 0 : LO_FLAGS_PARTSCAN,
+                                loop_lock_operation,
+                                &d);
         if (r < 0)
                 return log_error_errno(r, "Failed to set up loopback device for %s: %m", image);
 

@@ -1,7 +1,5 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
-#include <sys/file.h>
-
 #include "alloc-util.h"
 #include "fdisk-util.h"
 #include "gpt.h"
@@ -146,6 +144,7 @@ int read_partition_info(
 }
 
 int find_suitable_partition(
+                int fd,
                 const char *device,
                 uint64_t space,
                 sd_id128_t *partition_type,
@@ -157,6 +156,7 @@ int find_suitable_partition(
         size_t n_partitions;
         int r;
 
+        assert(fd >= 0);
         assert(device);
         POINTER_MAY_BE_NULL(partition_type);
         assert(ret);
@@ -165,7 +165,7 @@ int find_suitable_partition(
         if (r < 0)
                 return r;
 
-        r = fdisk_new_context_at(AT_FDCWD, device, /* read_only= */ true, /* sector_size= */ UINT32_MAX, &c);
+        r = fdisk_new_context_fd(fd, device, /* read_only= */ true, /* sector_size= */ UINT32_MAX, &c);
         if (r < 0)
                 return log_error_errno(r, "Failed to create fdisk context from '%s': %m", device);
 
@@ -213,6 +213,7 @@ int find_suitable_partition(
 }
 
 int patch_partition(
+                int fd,
                 const char *device,
                 const PartitionInfo *info,
                 PartitionChange change) {
@@ -221,8 +222,9 @@ int patch_partition(
         _cleanup_(fdisk_unref_contextp) struct fdisk_context *c = NULL;
         bool tweak_no_auto, tweak_read_only, tweak_growfs;
         GptPartitionType type;
-        int r, fd;
+        int r;
 
+        assert(fd >= 0);
         assert(device);
         assert(info);
         assert(change <= _PARTITION_CHANGE_MAX);
@@ -234,17 +236,9 @@ int patch_partition(
         if (r < 0)
                 return r;
 
-        r = fdisk_new_context_at(AT_FDCWD, device, /* read_only= */ false, /* sector_size= */ UINT32_MAX, &c);
+        r = fdisk_new_context_fd(fd, device, /* read_only= */ false, /* sector_size= */ UINT32_MAX, &c);
         if (r < 0)
                 return log_error_errno(r, "Failed to create fdisk context from '%s': %m", device);
-
-        assert_se((fd = sym_fdisk_get_devfd(c)) >= 0);
-
-        /* Make sure udev doesn't read the device while we make changes (this lock is released automatically
-         * by the kernel when the fd is closed, i.e. when the fdisk context is freed, hence no explicit
-         * unlock by us here anywhere.) */
-        if (flock(fd, LOCK_EX) < 0)
-                return log_error_errno(errno, "Failed to lock block device '%s': %m", device);
 
         if (!sym_fdisk_is_labeltype(c, FDISK_DISKLABEL_GPT))
                 return log_error_errno(SYNTHETIC_ERRNO(EHWPOISON), "Disk %s has no GPT disk label, not suitable.", device);

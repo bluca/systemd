@@ -81,6 +81,7 @@ DEFINE_TRIVIAL_CLEANUP_FUNC_FULL_RENAME(struct fdisk_parttype*, sym_fdisk_unref_
 DEFINE_TRIVIAL_CLEANUP_FUNC_FULL_RENAME(struct fdisk_table*, sym_fdisk_unref_table, fdisk_unref_tablep, NULL);
 
 int fdisk_new_context_at(int dir_fd, const char *path, bool read_only, uint32_t sector_size, struct fdisk_context **ret);
+int fdisk_new_context_fd(int fd, const char *device, bool read_only, uint32_t sector_size, struct fdisk_context **ret);
 
 int fdisk_partition_get_uuid_as_id128(struct fdisk_partition *p, sd_id128_t *ret);
 int fdisk_partition_get_type_as_id128(struct fdisk_partition *p, sd_id128_t *ret);

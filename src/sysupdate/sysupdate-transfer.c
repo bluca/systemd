@@ -91,8 +91,14 @@ Transfer* transfer_new(Context *ctx) {
                 return NULL;
 
         *t = (Transfer) {
-                .source.type = _RESOURCE_TYPE_INVALID,
-                .target.type = _RESOURCE_TYPE_INVALID,
+                .source = {
+                        .type = _RESOURCE_TYPE_INVALID,
+                        .partition_device_fd = -EBADF,
+                },
+                .target = {
+                        .type = _RESOURCE_TYPE_INVALID,
+                        .partition_device_fd = -EBADF,
+                },
                 .remove_temporary = true,
                 .mode = MODE_INVALID,
                 .tries_left = UINT64_MAX,
@@ -804,7 +810,7 @@ static int transfer_instance_vacuum(
                 }
 
                 log_debug("Resetting partition '%s' to empty.", pinfo.device);
-                r = patch_partition(t->target.path, &pinfo, change);
+                r = patch_partition(t->target.partition_device_fd, t->target.path, &pinfo, change);
                 if (r < 0)
                         return r;
 
@@ -1177,7 +1183,15 @@ static int run_callout(
         if (r < 0)
                 return log_error_errno(r, "Failed to prepare notify socket: %m");
 
-        r = pidref_safe_fork(ctx->name, FORK_RESET_SIGNALS|FORK_DEATHSIG_SIGTERM|FORK_LOG, &ctx->pid);
+        int target_fd = transfer->target.type == RESOURCE_PARTITION ? transfer->target.partition_device_fd : -EBADF;
+        r = pidref_safe_fork_full(
+                        ctx->name,
+                        /* stdio_fds= */ NULL,
+                        target_fd >= 0 ? &target_fd : NULL,
+                        target_fd >= 0 ? 1 : 0,
+                        FORK_RESET_SIGNALS|FORK_DEATHSIG_SIGTERM|FORK_LOG|
+                        (target_fd >= 0 ? FORK_CLOEXEC_OFF : 0),
+                        &ctx->pid);
         if (r < 0)
                 return log_error_errno(r, "Failed to fork process %s: %m", ctx->name);
         if (r == 0) {
@@ -1328,6 +1342,7 @@ int transfer_acquire_instance(Transfer *t, Instance *i, InstanceMetadata *f, Tra
 
         if (t->target.type == RESOURCE_PARTITION) {
                 r = find_suitable_partition(
+                                t->target.partition_device_fd,
                                 t->target.path,
                                 i->metadata.size,
                                 t->target.partition_type_set ? &t->target.partition_type.uuid : NULL,
@@ -1353,6 +1368,7 @@ int transfer_acquire_instance(Transfer *t, Instance *i, InstanceMetadata *f, Tra
                           t->partition_info.label,
                           SD_ID128_TO_UUID_STRING(t->partition_info.type));
                 r = patch_partition(
+                                t->target.partition_device_fd,
                                 t->target.path,
                                 &t->partition_info,
                                 t->partition_change);
@@ -1413,7 +1429,7 @@ int transfer_acquire_instance(Transfer *t, Instance *i, InstanceMetadata *f, Tra
                                                "--size-max", max_size,
                                                t->context->sync ? "--sync=yes" : "--sync=no",
                                                i->path,
-                                               t->target.path),
+                                               FORMAT_PROC_FD_PATH(t->target.partition_device_fd)),
                                         t, i, cb, userdata);
                         break;
 
@@ -1492,7 +1508,7 @@ int transfer_acquire_instance(Transfer *t, Instance *i, InstanceMetadata *f, Tra
                                                "--size-max", max_size,
                                                t->context->sync ? "--sync=yes" : "--sync=no",
                                                i->path,
-                                               t->target.path),
+                                               FORMAT_PROC_FD_PATH(t->target.partition_device_fd)),
                                         t, i, cb, userdata);
                         break;
 
@@ -1612,6 +1628,7 @@ int transfer_acquire_instance(Transfer *t, Instance *i, InstanceMetadata *f, Tra
                           t->partition_info.device,
                           SD_ID128_TO_UUID_STRING(t->partition_info.type));
                 r = patch_partition(
+                                t->target.partition_device_fd,
                                 t->target.path,
                                 &t->partition_info,
                                 t->partition_change);
@@ -1715,6 +1732,7 @@ int transfer_install_instance(
                 t->partition_change = PARTITION_LABEL | PARTITION_TYPE;
 
                 r = patch_partition(
+                                t->target.partition_device_fd,
                                 t->target.path,
                                 &t->partition_info,
                                 t->partition_change);

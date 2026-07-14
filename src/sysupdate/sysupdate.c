@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "sd-bus.h"
@@ -8,6 +10,7 @@
 #include "sd-varlink.h"
 
 #include "build.h"
+#include "blockdev-util.h"
 #include "bus-polkit.h"
 #include "condition.h"
 #include "conf-files.h"
@@ -20,9 +23,11 @@
 #include "env-util.h"
 #include "errno-util.h"
 #include "fd-util.h"
+#include "fdset.h"
 #include "format-table.h"
 #include "glyph-util.h"
 #include "hashmap.h"
+#include "hash-funcs.h"
 #include "help-util.h"
 #include "hexdecoct.h"
 #include "image-policy.h"
@@ -88,6 +93,8 @@ STATIC_DESTRUCTOR_REGISTER(arg_transfer_source, freep);
                 .instances_max = UINT64_MAX,                      \
                 .verify = -1,                                     \
                 .cleanup = -1,                                    \
+                .image_fd = -EBADF,                               \
+                .image_lock_fd = -EBADF,                          \
                 .installdb_fd = -EBADF,                           \
                 .target_identifier.class = _TARGET_CLASS_INVALID, \
                 .component_suggest = -1,                          \
@@ -97,7 +104,10 @@ void context_done(Context *c) {
         assert(c);
 
         c->mounted_dir = umount_and_rmdir_and_free(c->mounted_dir);
+        c->partition_target_locks = fdset_free(c->partition_target_locks);
         c->loop_device = loop_device_unref(c->loop_device);
+        c->image_fd = safe_close(c->image_fd);
+        c->image_lock_fd = safe_close(c->image_lock_fd);
 
         FOREACH_ARRAY(tr, c->transfers, c->n_transfers)
                 transfer_free(*tr);
@@ -391,7 +401,225 @@ typedef enum ReadDefinitionsFlags {
         READ_DEFINITIONS_REQUIRES_ENABLED_TRANSFERS = 1 << 0, /* fail unless there's at least one enabled transfer */
         READ_DEFINITIONS_REQUIRES_ANY_TRANSFERS     = 1 << 1, /* fail unless there's at least one transfer */
         READ_DEFINITIONS_REQUIRES_ENABLED_COMPONENT = 1 << 2, /* fail if component is disabled */
+        READ_DEFINITIONS_LOCK_PARTITIONS_EXCLUSIVE = 1 << 3, /* take exclusive rather than shared partition target locks */
 } ReadDefinitionsFlags;
+
+typedef struct PartitionTarget {
+        Transfer *transfer;
+        dev_t device;
+        ino_t inode;
+        bool regular;
+        int fd;
+} PartitionTarget;
+
+static int partition_target_compare(const PartitionTarget *a, const PartitionTarget *b) {
+        int r;
+
+        assert(a);
+        assert(b);
+
+        r = CMP(a->regular, b->regular);
+        if (r != 0)
+                return r;
+
+        r = devt_compare_func(&a->device, &b->device);
+        if (r != 0 || !a->regular)
+                return r;
+
+        return CMP(a->inode, b->inode);
+}
+
+static int partition_target_add(Transfer *transfer, PartitionTarget **targets, size_t *n_targets) {
+        struct stat st;
+        int r;
+
+        assert(transfer);
+        assert(targets);
+        assert(n_targets);
+
+        if (transfer->target.type != RESOURCE_PARTITION)
+                return 0;
+
+        assert(transfer->target.path);
+
+        if (stat(transfer->target.path, &st) < 0)
+                return log_error_errno(errno, "Failed to stat partition target '%s': %m", transfer->target.path);
+
+        PartitionTarget target = {
+                .transfer = transfer,
+                .fd = -EBADF,
+        };
+
+        if (S_ISBLK(st.st_mode)) {
+                r = block_get_whole_disk(st.st_rdev, &target.device);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to find whole disk for partition target '%s': %m", transfer->target.path);
+        } else if (S_ISREG(st.st_mode)) {
+                target.device = st.st_dev;
+                target.inode = st.st_ino;
+                target.regular = true;
+        } else
+                return log_error_errno(SYNTHETIC_ERRNO(ENOTBLK), "Partition target '%s' is neither a block device nor a regular file.", transfer->target.path);
+
+        if (!GREEDY_REALLOC_APPEND(*targets, *n_targets, &target, 1))
+                return log_oom();
+
+        return 1;
+}
+
+static int context_lock_partition_targets(Context *c, int operation) {
+        _cleanup_free_ PartitionTarget *targets = NULL;
+        size_t n_targets = 0;
+        int r;
+
+        assert(c);
+        assert(IN_SET(operation, LOCK_SH, LOCK_EX));
+        assert(!c->partition_target_locks);
+
+        FOREACH_ARRAY(transfer, c->transfers, c->n_transfers) {
+                r = partition_target_add(*transfer, &targets, &n_targets);
+                if (r < 0)
+                        return r;
+        }
+        FOREACH_ARRAY(transfer, c->disabled_transfers, c->n_disabled_transfers) {
+                r = partition_target_add(*transfer, &targets, &n_targets);
+                if (r < 0)
+                        return r;
+        }
+
+        if (n_targets == 0)
+                return 0;
+
+        typesafe_qsort(targets, n_targets, partition_target_compare);
+
+        c->partition_target_locks = fdset_new();
+        if (!c->partition_target_locks)
+                return log_oom();
+
+        for (size_t i = 0; i < n_targets; i++) {
+                PartitionTarget *target = targets + i;
+
+                if (i > 0 && partition_target_compare(targets + i - 1, target) == 0) {
+                        target->fd = targets[i - 1].fd;
+                        assert(target->fd >= 0);
+                        target->transfer->target.partition_device_fd = target->fd;
+                        continue;
+                }
+
+                _cleanup_close_ int fd = -EBADF;
+                if (target->regular) {
+                        struct stat st;
+
+                        if (c->image_fd >= 0) {
+                                if (fstat(c->image_fd, &st) < 0)
+                                        return log_error_errno(errno, "Failed to stat locked image: %m");
+                                if (S_ISREG(st.st_mode) && st.st_dev == target->device && st.st_ino == target->inode) {
+                                        target->fd = c->image_fd;
+                                        target->transfer->target.partition_device_fd = target->fd;
+                                        continue;
+                                }
+                        }
+
+                        fd = open(target->transfer->target.path,
+                                  (operation == LOCK_EX ? O_RDWR : O_RDONLY)|O_CLOEXEC|O_NONBLOCK|O_NOCTTY);
+                        if (fd < 0)
+                                return log_error_errno(errno, "Failed to open partition target '%s': %m", target->transfer->target.path);
+
+                        if (fstat(fd, &st) < 0)
+                                return log_error_errno(errno, "Failed to stat partition target '%s': %m", target->transfer->target.path);
+                        if (!S_ISREG(st.st_mode) || st.st_dev != target->device || st.st_ino != target->inode)
+                                return log_error_errno(SYNTHETIC_ERRNO(ESTALE), "Partition target '%s' changed while locking it.", target->transfer->target.path);
+
+                        if (flock(fd, operation) < 0)
+                                return log_error_errno(errno, "Failed to lock partition target '%s': %m", target->transfer->target.path);
+                } else {
+                        if (c->image_lock_fd >= 0) {
+                                struct stat st;
+
+                                if (fstat(c->image_lock_fd, &st) < 0)
+                                        return log_error_errno(errno, "Failed to stat locked image: %m");
+                                if (S_ISBLK(st.st_mode) && st.st_rdev == target->device) {
+                                        target->fd = c->image_lock_fd;
+                                        target->transfer->target.partition_device_fd = target->fd;
+                                        continue;
+                                }
+                        }
+
+                        fd = lock_whole_block_device(
+                                        target->device,
+                                        operation == LOCK_EX ? O_RDWR : O_RDONLY,
+                                        operation);
+                        if (fd < 0)
+                                return log_error_errno(fd, "Failed to lock whole disk for partition target '%s': %m", target->transfer->target.path);
+
+                        struct stat st;
+                        if (stat(target->transfer->target.path, &st) < 0)
+                                return log_error_errno(errno, "Failed to stat partition target '%s': %m", target->transfer->target.path);
+                        if (!S_ISBLK(st.st_mode))
+                                return log_error_errno(SYNTHETIC_ERRNO(ESTALE), "Partition target '%s' is no longer a block device.", target->transfer->target.path);
+
+                        dev_t whole_device;
+                        r = block_get_whole_disk(st.st_rdev, &whole_device);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to find whole disk for partition target '%s': %m", target->transfer->target.path);
+                        if (whole_device != target->device)
+                                return log_error_errno(SYNTHETIC_ERRNO(ESTALE), "Partition target '%s' changed while locking it.", target->transfer->target.path);
+                }
+
+                target->fd = fd;
+                r = fdset_consume(c->partition_target_locks, TAKE_FD(fd));
+                if (r < 0)
+                        return r;
+
+                target->transfer->target.partition_device_fd = target->fd;
+        }
+
+        return 0;
+}
+
+static int context_lock_image(Context *c, int open_mode, int operation) {
+        _cleanup_close_ int fd = -EBADF, lock_fd = -EBADF;
+        struct stat st;
+
+        assert(c);
+        assert(IN_SET(open_mode, O_RDONLY, O_RDWR));
+        assert(IN_SET(operation, LOCK_SH, LOCK_EX));
+        assert(c->image_fd < 0);
+        assert(c->image_lock_fd < 0);
+
+        if (c->root || !c->image)
+                return 0;
+
+        if (stat(c->image, &st) < 0)
+                return log_error_errno(errno, "Failed to stat image '%s': %m", c->image);
+        if (!IN_SET(st.st_mode & S_IFMT, S_IFREG, S_IFBLK))
+                return 0;
+
+        fd = open(c->image, open_mode|O_CLOEXEC|O_NONBLOCK|O_NOCTTY);
+        if (fd < 0)
+                return log_error_errno(errno, "Failed to open image '%s': %m", c->image);
+
+        struct stat opened_st;
+        if (fstat(fd, &opened_st) < 0)
+                return log_error_errno(errno, "Failed to stat image '%s': %m", c->image);
+        if ((opened_st.st_mode & S_IFMT) != (st.st_mode & S_IFMT) ||
+            (S_ISREG(st.st_mode) && (opened_st.st_dev != st.st_dev || opened_st.st_ino != st.st_ino)) ||
+            (S_ISBLK(st.st_mode) && opened_st.st_rdev != st.st_rdev))
+                return log_error_errno(SYNTHETIC_ERRNO(ESTALE), "Image '%s' changed while locking it.", c->image);
+
+        if (S_ISREG(opened_st.st_mode)) {
+                if (flock(fd, operation) < 0)
+                        return log_error_errno(errno, "Failed to lock image '%s': %m", c->image);
+        } else {
+                lock_fd = lock_whole_block_device(opened_st.st_rdev, open_mode, operation);
+                if (lock_fd < 0)
+                        return log_error_errno(lock_fd, "Failed to lock whole disk for image '%s': %m", c->image);
+        }
+
+        c->image_fd = TAKE_FD(fd);
+        c->image_lock_fd = TAKE_FD(lock_fd);
+        return 1;
+}
 
 static int context_read_definitions(Context *c, const char* node, ReadDefinitionsFlags flags) {
         _cleanup_strv_free_ char **dirs = NULL;
@@ -1150,8 +1378,10 @@ static int context_process_image(
         assert(!c->mounted_dir);
         assert(!c->loop_device);
 
-        r = mount_image_privately_interactively(
+        r = mount_image_privately_interactively_full(
+                        c->image_fd,
                         c->image,
+                        c->image_lock_fd >= 0 ? LOCK_UN : LOCK_SH,
                         c->image_policy,
                         (FLAGS_SET(flags, PROCESS_IMAGE_READ_ONLY) ? DISSECT_IMAGE_READ_ONLY : 0) |
                         DISSECT_IMAGE_FSCK |
@@ -1191,11 +1421,24 @@ static int context_load_offline(
         /* Sets up a context object and initializes everything we can initialize offline, i.e. without
          * checking on the update source (i.e. the Internet) what versions are available */
 
+        int lock_operation = FLAGS_SET(read_definitions_flags, READ_DEFINITIONS_LOCK_PARTITIONS_EXCLUSIVE) ? LOCK_EX : LOCK_SH;
+
+        r = context_lock_image(
+                        context,
+                        FLAGS_SET(process_image_flags, PROCESS_IMAGE_READ_ONLY) ? O_RDONLY : O_RDWR,
+                        lock_operation);
+        if (r < 0)
+                return r;
+
         r = context_process_image(context, process_image_flags);
         if (r < 0)
                 return r;
 
         r = context_read_definitions(context, context->loop_device ? context->loop_device->node : NULL, read_definitions_flags);
+        if (r < 0)
+                return r;
+
+        r = context_lock_partition_targets(context, lock_operation);
         if (r < 0)
                 return r;
 
@@ -2365,7 +2608,8 @@ static int verb_update_impl(int argc, char **argv, UpdateActionFlags action_flag
                         /* process_image_flags= */ 0,
                         READ_DEFINITIONS_REQUIRES_ENABLED_TRANSFERS|
                         READ_DEFINITIONS_REQUIRES_ANY_TRANSFERS|
-                        READ_DEFINITIONS_REQUIRES_ENABLED_COMPONENT);
+                        READ_DEFINITIONS_REQUIRES_ENABLED_COMPONENT|
+                        READ_DEFINITIONS_LOCK_PARTITIONS_EXCLUSIVE);
         if (r < 0) {
                 if (r != -ENOENT)
                         return r;
@@ -2466,7 +2710,8 @@ static int verb_vacuum(int argc, char *argv[], uintptr_t _data, void *userdata) 
         r = context_load_offline(
                         &context,
                         /* process_image_flags= */ 0,
-                        READ_DEFINITIONS_REQUIRES_ANY_TRANSFERS);
+                        READ_DEFINITIONS_REQUIRES_ANY_TRANSFERS|
+                        READ_DEFINITIONS_LOCK_PARTITIONS_EXCLUSIVE);
         if (r < 0)
                 return r;
 

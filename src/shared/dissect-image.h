@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #pragma once
 
+#include <sys/file.h>
+
 #include "sd-id128.h"
 
 #include "architecture.h"
@@ -239,7 +241,26 @@ bool dissected_image_verity_candidate(const DissectedImage *image, PartitionDesi
 bool dissected_image_verity_ready(const DissectedImage *image, PartitionDesignator d);
 bool dissected_image_verity_sig_ready(const DissectedImage *image, PartitionDesignator d);
 
-int mount_image_privately_interactively(const char *image, const ImagePolicy *image_policy, DissectImageFlags flags, char **ret_directory, int *ret_dir_fd, LoopDevice **ret_loop_device);
+int mount_image_privately_interactively_full(
+                int image_fd,
+                const char *image,
+                int loop_lock_operation,
+                const ImagePolicy *image_policy,
+                DissectImageFlags flags,
+                char **ret_directory,
+                int *ret_dir_fd,
+                LoopDevice **ret_loop_device);
+
+static inline int mount_image_privately_interactively(
+                const char *image,
+                const ImagePolicy *image_policy,
+                DissectImageFlags flags,
+                char **ret_directory,
+                int *ret_dir_fd,
+                LoopDevice **ret_loop_device) {
+
+        return mount_image_privately_interactively_full(-EBADF, image, LOCK_SH, image_policy, flags, ret_directory, ret_dir_fd, ret_loop_device);
+}
 
 int verity_dissect_and_mount(
                 int src_fd,

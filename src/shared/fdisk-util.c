@@ -201,6 +201,44 @@ int fdisk_new_context_at(
         return 0;
 }
 
+int fdisk_new_context_fd(
+                int fd,
+                const char *device,
+                bool read_only,
+                uint32_t sector_size,
+                struct fdisk_context **ret) {
+
+        _cleanup_(fdisk_unref_contextp) struct fdisk_context *c = NULL;
+        int r;
+
+        assert(fd >= 0);
+        assert(device);
+        assert(ret);
+
+        c = sym_fdisk_new_context();
+        if (!c)
+                return -ENOMEM;
+
+        if (sector_size == UINT32_MAX) {
+                r = probe_sector_size_prefer_ioctl(fd, &sector_size);
+                if (r < 0)
+                        return r;
+        }
+
+        if (sector_size != 0) {
+                r = sym_fdisk_save_user_sector_size(c, /* phy= */ 0, sector_size);
+                if (r < 0)
+                        return r;
+        }
+
+        r = sym_fdisk_assign_device_by_fd(c, fd, device, read_only);
+        if (r < 0)
+                return r;
+
+        *ret = TAKE_PTR(c);
+        return 0;
+}
+
 int fdisk_partition_get_uuid_as_id128(struct fdisk_partition *p, sd_id128_t *ret) {
         const char *ids;
 

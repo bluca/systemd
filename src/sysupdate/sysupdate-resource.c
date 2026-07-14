@@ -265,12 +265,13 @@ static int resource_load_from_blockdev(Resource *rr) {
         int r;
 
         assert(rr);
+        assert(rr->partition_device_fd >= 0);
 
         r = DLOPEN_FDISK(LOG_DEBUG, recommended);
         if (r < 0)
                 return r;
 
-        r = fdisk_new_context_at(AT_FDCWD, rr->path, /* read_only= */ true, /* sector_size= */ UINT32_MAX, &c);
+        r = fdisk_new_context_fd(rr->partition_device_fd, rr->path, /* read_only= */ true, /* sector_size= */ UINT32_MAX, &c);
         if (r < 0)
                 return log_error_errno(r, "Failed to create fdisk context from '%s': %m", rr->path);
 

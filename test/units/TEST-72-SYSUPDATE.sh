@@ -252,6 +252,45 @@ verify_object_fields() {
     [[ "${updatectl_output}" != *"Unrecognized object field"* ]] || exit 1
 }
 
+test_sysupdate_partition_lock() {
+    local lock_target="${1:?}"
+    local lock_ready="$WORKDIR/partition-lock-ready"
+    local lock_release="$WORKDIR/partition-lock-release"
+    local lock_pid lock_state lock_status
+
+    # A shared external lock may coexist with read-only sysupdate, but must block a mutating operation.
+    mkfifo "$lock_ready" "$lock_release"
+    flock --shared "$lock_target" sh -c 'echo ready >"$1"; read -r <"$2"' sh "$lock_ready" "$lock_release" &
+    lock_pid=$!
+    read -r lock_state <"$lock_ready"
+    [[ "$lock_state" == ready ]]
+    timeout 10 "$SYSUPDATE" --offline list >/dev/null
+    set +e
+    timeout 1 "$SYSUPDATE" --offline vacuum
+    lock_status=$?
+    set -e
+    echo release >"$lock_release"
+    wait "$lock_pid"
+    rm "$lock_ready" "$lock_release"
+    [[ "$lock_status" -eq 124 ]]
+
+    # An exclusive external lock must also block read-only sysupdate, proving it takes a shared lock.
+    mkfifo "$lock_ready" "$lock_release"
+    flock --exclusive "$lock_target" sh -c 'echo ready >"$1"; read -r <"$2"' sh "$lock_ready" "$lock_release" &
+    lock_pid=$!
+    read -r lock_state <"$lock_ready"
+    [[ "$lock_state" == ready ]]
+    set +e
+    timeout 1 "$SYSUPDATE" --offline list
+    lock_status=$?
+    set -e
+    echo release >"$lock_release"
+    wait "$lock_pid"
+    rm "$lock_ready" "$lock_release"
+    [[ "$lock_status" -eq 124 ]]
+}
+
+partition_lock_tested=false
 for sector_size in "${SECTOR_SIZES[@]}"; do
 for client in sysupdate-cli varlink; do
 for update_type in monolithic split-offline split updatectl; do
@@ -414,6 +453,13 @@ EOF
 
     rm -rf "${WORKDIR:?}"/{esp,xbootldr,source,system}
     mkdir -p "$WORKDIR"/{source,esp/EFI/Linux,xbootldr/EFI/Linux,system}
+
+    # Read-only operations may share ownership of a GPT disk, while mutating operations must wait for
+    # exclusive ownership. Without sysupdate's BSD lock the vacuum completes immediately instead.
+    if [[ "$partition_lock_tested" == false ]]; then
+        partition_lock_tested=true
+        test_sysupdate_partition_lock "$blockdev"
+    fi
 
     # Install initial version and verify
     new_version "$sector_size" v1

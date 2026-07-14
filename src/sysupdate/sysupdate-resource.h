@@ -78,6 +78,7 @@ typedef struct Resource {
         char **patterns;
         GptPartitionType partition_type;
         bool partition_type_set;
+        int partition_device_fd; /* borrowed from Context.partition_target_locks */
 
         /* All instances of this resource we found */
         Instance **instances;

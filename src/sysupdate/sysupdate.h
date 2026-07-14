@@ -30,8 +30,11 @@ typedef struct Context {
         char *transfer_source;
 
         /* Loaded state: */
+        int image_fd;
+        int image_lock_fd;
         LoopDevice *loop_device;
         char *mounted_dir;
+        FDSet *partition_target_locks;
 
         char *component_description;
         char **component_documentation;
