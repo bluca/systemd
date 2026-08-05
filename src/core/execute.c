@@ -1191,6 +1191,7 @@ void exec_context_dump(const ExecContext *c, FILE* f, const char *prefix) {
                 "%sMountAPIVFS: %s\n"
                 "%sBindLogSockets: %s\n"
                 "%sIgnoreSIGPIPE: %s\n"
+                "%sProtectHypervisor: %s\n"
                 "%sMemoryDenyWriteExecute: %s\n"
                 "%sRestrictRealtime: %s\n"
                 "%sRestrictSUIDSGID: %s\n"
@@ -1220,6 +1221,7 @@ void exec_context_dump(const ExecContext *c, FILE* f, const char *prefix) {
                 prefix, yes_no(exec_context_get_effective_mount_apivfs(c)),
                 prefix, yes_no(exec_context_get_effective_bind_log_sockets(c)),
                 prefix, yes_no(c->ignore_sigpipe),
+                prefix, yes_no(c->protect_hypervisor),
                 prefix, yes_no(c->memory_deny_write_execute),
                 prefix, yes_no(c->restrict_realtime),
                 prefix, yes_no(c->restrict_suid_sgid),

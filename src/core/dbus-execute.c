@@ -1349,6 +1349,7 @@ const sd_bus_vtable bus_exec_vtable[] = {
         SD_BUS_PROPERTY("SmackProcessLabel", "(bs)", property_get_smack_process_label, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("IgnoreSIGPIPE", "b", bus_property_get_bool, offsetof(ExecContext, ignore_sigpipe), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("NoNewPrivileges", "b", bus_property_get_bool, offsetof(ExecContext, no_new_privileges), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("ProtectHypervisor", "b", bus_property_get_bool, offsetof(ExecContext, protect_hypervisor), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("SystemCallFilter", "(bas)", property_get_syscall_filter, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("SystemCallArchitectures", "as", property_get_syscall_archs, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("SystemCallErrorNumber", "i", bus_property_get_int, offsetof(ExecContext, syscall_errno), SD_BUS_VTABLE_PROPERTY_CONST),
@@ -2301,6 +2302,9 @@ int bus_exec_context_set_transient_property(
 
         if (streq(name, "SyslogLevelPrefix"))
                 return bus_set_transient_bool(u, name, &c->syslog_level_prefix, message, flags, reterr_error);
+
+        if (streq(name, "ProtectHypervisor"))
+                return bus_set_transient_bool(u, name, &c->protect_hypervisor, message, flags, reterr_error);
 
         if (streq(name, "MemoryDenyWriteExecute"))
                 return bus_set_transient_bool(u, name, &c->memory_deny_write_execute, message, flags, reterr_error);

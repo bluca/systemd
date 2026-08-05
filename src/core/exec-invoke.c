@@ -1,7 +1,10 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <grp.h>
+#include <linux/fs.h>
+#include <linux/kvm.h>
 #include <linux/securebits.h>
+#include <linux/userfaultfd.h>
 #include <poll.h>
 #include <sched.h>
 #include <sys/eventfd.h>
@@ -40,6 +43,7 @@
 #include "env-util.h"
 #include "escape.h"
 #include "exec-credential.h"
+#include "exec-hypervisor.h"
 #include "exec-invoke.h"
 #include "execute.h"
 #include "exit-status.h"
@@ -1622,7 +1626,31 @@ static bool skip_seccomp_unavailable(const char *msg) {
         return true;
 }
 
-static int apply_syscall_filter(const ExecContext *c, const ExecParameters *p) {
+static int apply_syscall_filter(const ExecContext *c, const ExecParameters *p, ExecHypervisor *hypervisor) {
+        _cleanup_hashmap_free_ Hashmap *host_filter = NULL;
+        const SeccompArgumentException runtime_exceptions[] = {
+                {
+                        .syscall = SCMP_SYS(ioctl),
+                        .argument = 1,
+                        .type = SECCOMP_ARGUMENT_EXCEPTION_MASKED_EQ,
+                        .mask = UINT64_C(0xff00),
+                        .value = (uint64_t) KVMIO << 8,
+                },
+                {
+                        .syscall = SCMP_SYS(ioctl),
+                        .argument = 1,
+                        .type = SECCOMP_ARGUMENT_EXCEPTION_MASKED_EQ,
+                        .mask = UINT64_C(0xff00),
+                        .value = (uint64_t) _IOC_TYPE(PROCMAP_QUERY) << 8,
+                },
+                {
+                        .syscall = SCMP_SYS(ioctl),
+                        .argument = 1,
+                        .type = SECCOMP_ARGUMENT_EXCEPTION_MASKED_EQ,
+                        .mask = UINT64_C(0xff00),
+                        .value = (uint64_t) _IOC_TYPE(UFFDIO_API) << 8,
+                },
+        };
         uint32_t negative_action, default_action, action;
         int r;
 
@@ -1645,22 +1673,142 @@ static int apply_syscall_filter(const ExecContext *c, const ExecParameters *p) {
                 action = negative_action;
         }
 
-        /* Sending over exec_fd or handoff_timestamp_fd requires write() syscall.
-         *
-         * Note: this mutates c->syscall_filter despite the 'const ExecContext *c' qualifier.
-         * That is intentional and safe here because apply_syscall_filter() runs only in the
-         * post-fork child, which holds a private copy of the address space; the hashmap
-         * change is never visible to the manager process. */
-        if (p->exec_fd >= 0 || p->handoff_timestamp_fd >= 0) {
-                if (c->syscall_allow_list)
-                        log_debug("SystemCallFilter= allow-list in effect; adding 'write' syscall required for exec handoff.");
+        if (c->syscall_filter) {
+                host_filter = hashmap_copy(c->syscall_filter);
+                if (!host_filter)
+                        return -ENOMEM;
+        } else {
+                host_filter = hashmap_new(NULL);
+                if (!host_filter)
+                        return -ENOMEM;
+        }
 
-                r = seccomp_filter_set_add_by_name(c->syscall_filter, c->syscall_allow_list, "write");
+        if (exec_hypervisor_can_run(hypervisor)) {
+                r = exec_hypervisor_set_syscall_filter(
+                                hypervisor,
+                                c->syscall_filter,
+                                c->syscall_allow_list,
+                                c->syscall_errno);
                 if (r < 0)
                         return r;
         }
 
-        return seccomp_load_syscall_filter_set_raw(default_action, c->syscall_filter, action, false);
+        /* Sending over exec_fd or handoff_timestamp_fd requires write() syscall.
+         * The host filter is a private copy so this runtime permission is not
+         * inherited by the guest policy. */
+        if (p->exec_fd >= 0 || p->handoff_timestamp_fd >= 0) {
+                if (c->syscall_allow_list)
+                        log_debug("SystemCallFilter= allow-list in effect; adding 'write' syscall required for exec handoff.");
+
+                r = seccomp_filter_set_add_by_name(host_filter, c->syscall_allow_list, "write");
+                if (r < 0 && r != -EEXIST)
+                        return r;
+        }
+
+        if (exec_hypervisor_can_run(hypervisor)) {
+                FOREACH_STRING(name,
+                               "capget",
+                               "capset",
+                               "clone",
+                               "clone3",
+                               "futex",
+                               "mmap",
+                               "mincore",
+                               "mprotect",
+                               "munmap",
+                               "munlockall",
+                               "openat",
+                               "close",
+                               "fstat",
+                               "fstatfs",
+                               "fgetxattr",
+                               "faccessat2",
+                               "fcntl",
+                               "getdents64",
+                               "lseek",
+                               "readlinkat",
+                               "getrandom",
+                               "getresuid",
+                               "gettimeofday",
+                               "get_mempolicy",
+                               "getsockopt",
+                               "getpid",
+                               "gettid",
+                               "getuid",
+                               "ioprio_get",
+                               "ioprio_set",
+                               "writev",
+                               "madvise",
+                               "pidfd_getfd",
+                               "pidfd_open",
+                               "personality",
+                               "prctl",
+                               "process_vm_readv",
+                               "sched_getaffinity",
+                               "sched_getattr",
+                               "sched_setaffinity",
+                               "sched_setattr",
+                               "set_mempolicy",
+                               "setpriority",
+                               "set_robust_list",
+                               "rseq",
+                               "userfaultfd",
+                               "write",
+                               "exit",
+                               "exit_group",
+                               "waitid",
+                               "rt_sigaction",
+                               "rt_sigpending",
+                               "rt_sigprocmask",
+                               "rt_tgsigqueueinfo",
+                               "rt_sigreturn",
+                               "tgkill",
+                               "timer_delete",
+                               "unshare") {
+                        r = seccomp_filter_set_add_by_name(host_filter, c->syscall_allow_list, name);
+                        if (r < 0 && r != -EEXIST)
+                                return r;
+                }
+        }
+
+        return seccomp_load_syscall_filter_set_raw_with_argument_exceptions(
+                        default_action,
+                        host_filter,
+                        action,
+                        false,
+                        exec_hypervisor_can_run(hypervisor) ? runtime_exceptions : NULL,
+                        exec_hypervisor_can_run(hypervisor) ? ELEMENTSOF(runtime_exceptions) : 0);
+}
+
+static int finalize_capabilities_for_hypervisor_exec(uint64_t ambient) {
+        uint64_t effective = ambient, permitted = ambient;
+        uid_t effective_uid, real_uid, saved_uid;
+        int r, secure_bits;
+
+        if (getresuid(&real_uid, &effective_uid, &saved_uid) < 0)
+                return -errno;
+
+        secure_bits = prctl_safe(PR_GET_SECUREBITS, 0, 0, 0, 0);
+        if (secure_bits < 0)
+                return secure_bits;
+
+        if ((real_uid == 0 || effective_uid == 0) && !FLAGS_SET(secure_bits, SECBIT_NOROOT)) {
+                CapabilityQuintet current;
+                uint64_t bounding;
+
+                r = capability_get(&current);
+                if (r < 0)
+                        return r;
+                r = capability_get_bounding(&bounding);
+                if (r < 0)
+                        return r;
+
+                permitted |= current.inheritable | bounding;
+                if (effective_uid == 0)
+                        effective = permitted;
+        }
+
+        return capability_set_effective_permitted(effective, permitted);
 }
 
 static int apply_syscall_log(const ExecContext *c, const ExecParameters *p) {
@@ -5213,6 +5361,7 @@ int exec_invoke(
         int named_iofds[3] = EBADF_TRIPLET;
         _cleanup_close_ int socket_fd = -EBADF, bpffs_socket_fd = -EBADF, bpffs_errno_pipe = -EBADF;
         _cleanup_(pidref_done_sigkill_wait) PidRef bpffs_pidref = PIDREF_NULL;
+        _cleanup_(exec_hypervisor_freep) ExecHypervisor *hypervisor = NULL;
 
         assert(command);
         assert(context);
@@ -5327,6 +5476,21 @@ int exec_invoke(
         if (r < 0) {
                 *exit_status = EXIT_FDS;
                 return log_error_errno(r, "Failed to close unwanted file descriptors: %m");
+        }
+
+        if (context->protect_hypervisor || FLAGS_SET(params->flags, EXEC_HYPERVISOR_PROBE)) {
+                r = exec_hypervisor_open_system(&hypervisor);
+                if (r < 0) {
+                        *exit_status = EXIT_KVM;
+                        return log_error_errno(r, "Failed to probe KVM executor support: %m");
+                }
+                if (r > 0) {
+                        r = add_shifted_fd(&keep_fds, &n_keep_fds, exec_hypervisor_kvm_fd(hypervisor));
+                        if (r < 0) {
+                                *exit_status = EXIT_FDS;
+                                return log_error_errno(r, "Failed to retain KVM file descriptor: %m");
+                        }
+                }
         }
 
         if (!context->same_pgrp &&
@@ -5955,7 +6119,7 @@ int exec_invoke(
                 use_smack = mac_smack_use();
 #endif
 #if HAVE_APPARMOR
-                use_apparmor = mac_apparmor_use();
+                use_apparmor = context->apparmor_profile && mac_apparmor_use();
 #endif
         }
 
@@ -6457,6 +6621,36 @@ int exec_invoke(
                 return log_error_errno(r, "Changing to the requested working directory failed: %m");
         }
 
+#if HAVE_SELINUX && HAVE_APPARMOR
+        if (hypervisor && use_selinux && use_apparmor) {
+                log_debug("Simultaneous SELinux and AppArmor use is unsupported for KVM execution, using native execution.");
+                hypervisor = exec_hypervisor_free(hypervisor);
+        }
+#endif
+
+        if (hypervisor) {
+                r = exec_hypervisor_prepare_image(hypervisor, executable_fd, command->path);
+                if (r < 0) {
+                        *exit_status = EXIT_KVM;
+                        return log_error_errno(r, "Failed to inspect executable for KVM: %m");
+                }
+
+                r = exec_hypervisor_create_machine(hypervisor);
+                if (r < 0) {
+                        *exit_status = EXIT_KVM;
+                        return log_error_errno(r, "Failed to create KVM executor machine: %m");
+                }
+                if (r == 0)
+                        hypervisor = exec_hypervisor_free(hypervisor);
+                else {
+                        r = exec_hypervisor_run_probe(hypervisor);
+                        if (r < 0) {
+                                *exit_status = EXIT_KVM;
+                                return log_error_errno(r, "Failed to run KVM executor probe: %m");
+                        }
+                }
+        }
+
         if (needs_sandboxing) {
                 /* Apply other MAC contexts late, but before seccomp syscall filtering, as those should really be last to
                  * influence our own codepaths as little as possible. Moreover, applying MAC contexts usually requires
@@ -6465,16 +6659,176 @@ int exec_invoke(
 
 #if HAVE_SELINUX
                 if (use_selinux) {
+                        _cleanup_freecon_ char *implicit_exec_context = NULL;
                         char *exec_context = mac_selinux_context_net ?: context->selinux_context;
+                        bool explicit_exec_context = exec_context;
+
+                        if (!exec_context && exec_hypervisor_can_run(hypervisor)) {
+                                r = mac_selinux_get_create_label_from_fd(executable_fd, &implicit_exec_context);
+                                if (r < 0) {
+                                        log_debug_errno(r, "Failed to determine implicit SELinux transition, using native execution: %m");
+                                        hypervisor = exec_hypervisor_free(hypervisor);
+                                } else
+                                        exec_context = implicit_exec_context;
+                        }
 
                         if (exec_context) {
-                                r = sym_setexeccon_raw(exec_context);
-                                if (r < 0) {
-                                        if (!context->selinux_context_ignore) {
-                                                *exit_status = EXIT_SELINUX_CONTEXT;
-                                                return log_error_errno(r, "Failed to change SELinux context to %s: %m", exec_context);
+                                if (exec_hypervisor_can_run(hypervisor)) {
+                                        _cleanup_freecon_ char *current_context = NULL,
+                                                *file_context = NULL,
+                                                *pending_exec_context = NULL,
+                                                *pending_fscreate_context = NULL,
+                                                *pending_keycreate_context = NULL,
+                                                *pending_sockcreate_context = NULL,
+                                                *previous_context = NULL;
+                                        bool context_changes = false, no_new_privileges = false, nosuid = false, secure_exec = false;
+                                        struct statvfs svfs;
+
+                                        r = RET_NERRNO(sym_getcon_raw(&current_context));
+                                        if (r >= 0 && !current_context)
+                                                r = -EOPNOTSUPP;
+                                        if (r >= 0)
+                                                context_changes = !streq(current_context, exec_context);
+                                        if (r >= 0 && context_changes) {
+                                                r = prctl_safe(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0);
+                                                if (r >= 0) {
+                                                        no_new_privileges = r > 0 || context_has_no_new_privileges(context);
+                                                        r = 0;
+                                                }
                                         }
-                                        log_debug_errno(r, "Failed to change SELinux context to %s, ignoring: %m", exec_context);
+                                        if (r >= 0 && context_changes) {
+                                                if (fstatvfs(executable_fd, &svfs) < 0)
+                                                        r = -errno;
+                                                else
+                                                        nosuid = FLAGS_SET(svfs.f_flag, ST_NOSUID);
+                                        }
+                                        if (r >= 0)
+                                                r = RET_NERRNO(sym_getprevcon_raw(&previous_context));
+                                        if (r >= 0)
+                                                r = RET_NERRNO(sym_getexeccon_raw(&pending_exec_context));
+                                        if (r >= 0)
+                                                r = RET_NERRNO(sym_getfscreatecon_raw(&pending_fscreate_context));
+                                        if (r >= 0)
+                                                r = RET_NERRNO(sym_getkeycreatecon_raw(&pending_keycreate_context));
+                                        if (r >= 0)
+                                                r = RET_NERRNO(sym_getsockcreatecon_raw(&pending_sockcreate_context));
+                                        if (r >= 0 &&
+                                            (!streq_ptr(previous_context, current_context) ||
+                                             pending_exec_context ||
+                                             pending_fscreate_context ||
+                                             pending_keycreate_context ||
+                                             pending_sockcreate_context))
+                                                r = -EOPNOTSUPP;
+                                        if (r >= 0)
+                                                r = RET_NERRNO(sym_fgetfilecon_raw(executable_fd, &file_context));
+                                        if (r >= 0 && !file_context)
+                                                r = -EOPNOTSUPP;
+                                        if (r >= 0 && explicit_exec_context)
+                                                r = RET_NERRNO(sym_selinux_check_access(
+                                                                current_context,
+                                                                current_context,
+                                                                "process",
+                                                                "setexec",
+                                                                NULL));
+                                        if (r >= 0 && context_changes)
+                                                r = RET_NERRNO(sym_selinux_check_access(
+                                                                current_context,
+                                                                exec_context,
+                                                                "process",
+                                                                "transition",
+                                                                NULL));
+                                        if (r >= 0 && no_new_privileges)
+                                                r = RET_NERRNO(sym_selinux_check_access(
+                                                                current_context,
+                                                                exec_context,
+                                                                "process2",
+                                                                "nnp_transition",
+                                                                NULL));
+                                        if (r >= 0 && nosuid)
+                                                r = RET_NERRNO(sym_selinux_check_access(
+                                                                current_context,
+                                                                exec_context,
+                                                                "process2",
+                                                                "nosuid_transition",
+                                                                NULL));
+                                        if (r >= 0 && context_changes)
+                                                r = RET_NERRNO(sym_selinux_check_access(
+                                                                exec_context,
+                                                                file_context,
+                                                                "file",
+                                                                "entrypoint",
+                                                                NULL));
+                                        if (r >= 0 && context_changes)
+                                                r = RET_NERRNO(sym_selinux_check_access(
+                                                                exec_context,
+                                                                current_context,
+                                                                "fd",
+                                                                "use",
+                                                                NULL));
+                                        if (r >= 0 && !context_changes)
+                                                r = RET_NERRNO(sym_selinux_check_access(
+                                                                current_context,
+                                                                file_context,
+                                                                "file",
+                                                                "execute_no_trans",
+                                                                NULL));
+                                        if (r >= 0 && context_changes) {
+                                                r = RET_NERRNO(sym_selinux_check_access(
+                                                                current_context,
+                                                                exec_context,
+                                                                "process",
+                                                                "noatsecure",
+                                                                NULL));
+                                                if (ERRNO_IS_NEG_PRIVILEGE(r)) {
+                                                        secure_exec = true;
+                                                        r = 0;
+                                                }
+                                                FOREACH_STRING(permission, "rlimitinh", "siginh") {
+                                                        if (r < 0)
+                                                                break;
+                                                        r = RET_NERRNO(sym_selinux_check_access(
+                                                                        current_context,
+                                                                        exec_context,
+                                                                        "process",
+                                                                        permission,
+                                                                        NULL));
+                                                }
+                                        }
+                                        if (r < 0) {
+                                                log_debug_errno(r, "SELinux context %s requires native SELinux exec handling, using native execution: %m", exec_context);
+                                                hypervisor = exec_hypervisor_free(hypervisor);
+                                        } else {
+                                                r = context_changes ? RET_NERRNO(sym_setcon_raw(exec_context)) : 0;
+                                                if (r < 0) {
+                                                        log_debug_errno(r, "Failed to change SELinux context to %s immediately, using native execution: %m", exec_context);
+                                                        hypervisor = exec_hypervisor_free(hypervisor);
+                                                } else {
+                                                        if (context_changes) {
+                                                                r = prctl_safe(PR_SET_PDEATHSIG, 0, 0, 0, 0);
+                                                                if (r < 0) {
+                                                                        *exit_status = EXIT_SELINUX_CONTEXT;
+                                                                        return log_error_errno(r, "Failed to clear parent-death signal after changing SELinux context to %s: %m", exec_context);
+                                                                }
+                                                        }
+                                                        exec_hypervisor_set_secure_exec(hypervisor, secure_exec);
+                                                        r = exec_hypervisor_run_probe(hypervisor);
+                                                        if (r < 0) {
+                                                                *exit_status = EXIT_KVM;
+                                                                return log_error_errno(r, "Failed to access KVM after changing SELinux context to %s: %m", exec_context);
+                                                        }
+                                                }
+                                        }
+                                }
+
+                                if (!exec_hypervisor_can_run(hypervisor) && explicit_exec_context) {
+                                        r = sym_setexeccon_raw(exec_context);
+                                        if (r < 0) {
+                                                if (!context->selinux_context_ignore) {
+                                                        *exit_status = EXIT_SELINUX_CONTEXT;
+                                                        return log_error_errno(r, "Failed to change SELinux context to %s: %m", exec_context);
+                                                }
+                                                log_debug_errno(r, "Failed to change SELinux context to %s, ignoring: %m", exec_context);
+                                        }
                                 }
                         }
                 }
@@ -6482,11 +6836,29 @@ int exec_invoke(
 
 #if HAVE_APPARMOR
                 if (use_apparmor && context->apparmor_profile) {
-                        r = ASSERT_PTR(sym_aa_change_onexec)(context->apparmor_profile);
-                        if (r < 0 && !context->apparmor_profile_ignore) {
-                                *exit_status = EXIT_APPARMOR_PROFILE;
-                                return log_error_errno(errno, "Failed to prepare AppArmor profile change to %s: %m",
-                                                       context->apparmor_profile);
+                        if (exec_hypervisor_can_run(hypervisor)) {
+                                r = RET_NERRNO(ASSERT_PTR(sym_aa_change_profile)(context->apparmor_profile));
+                                if (r < 0) {
+                                        log_debug_errno(r, "Failed to change AppArmor profile to %s immediately, using native execution: %m",
+                                                        context->apparmor_profile);
+                                        hypervisor = exec_hypervisor_free(hypervisor);
+                                } else {
+                                        r = exec_hypervisor_run_probe(hypervisor);
+                                        if (r < 0) {
+                                                *exit_status = EXIT_KVM;
+                                                return log_error_errno(r, "Failed to access KVM after changing AppArmor profile to %s: %m",
+                                                                       context->apparmor_profile);
+                                        }
+                                }
+                        }
+
+                        if (!exec_hypervisor_can_run(hypervisor)) {
+                                r = ASSERT_PTR(sym_aa_change_onexec)(context->apparmor_profile);
+                                if (r < 0 && !context->apparmor_profile_ignore) {
+                                        *exit_status = EXIT_APPARMOR_PROFILE;
+                                        return log_error_errno(errno, "Failed to prepare AppArmor profile change to %s: %m",
+                                                               context->apparmor_profile);
+                                }
                         }
                 }
 #endif
@@ -6619,7 +6991,7 @@ int exec_invoke(
 #if HAVE_SECCOMP
                 /* This really should remain as close to the execve() as possible, to make sure our own code is affected
                  * by the filter as little as possible. */
-                r = apply_syscall_filter(context, params);
+                r = apply_syscall_filter(context, params, hypervisor);
                 if (r < 0) {
                         *exit_status = EXIT_SECCOMP;
                         return log_error_errno(r, "Failed to apply system call filters: %m");
@@ -6732,6 +7104,20 @@ int exec_invoke(
 
         log_command_line(context, params, "Executing", executable, final_argv);
 
+        if (exec_hypervisor_can_run(hypervisor)) {
+                r = exec_hypervisor_prepare_stack(hypervisor, final_argv, accum_env);
+                if (r < 0) {
+                        *exit_status = EXIT_KVM;
+                        return log_error_errno(r, "Failed to prepare KVM guest stack: %m");
+                }
+
+                r = finalize_capabilities_for_hypervisor_exec(capability_ambient_set);
+                if (r < 0) {
+                        *exit_status = EXIT_CAPABILITIES;
+                        return log_error_errno(r, "Failed to finalize capabilities for KVM execution: %m");
+                }
+        }
+
         /* We have finished with all our initializations. Let's now let the manager know that. From this
          * point on, if the manager sees POLLHUP on the exec_fd, then execve() was successful. */
 
@@ -6750,6 +7136,23 @@ int exec_invoke(
         /* NB: we leave executable_fd, exec_fd, handoff_timestamp_fd open here. This is safe, because they
          * have O_CLOEXEC set, and the execve() below will thus automatically close them. In fact, for
          * exec_fd this is pretty much the whole raison d'etre. */
+
+        if (exec_hypervisor_can_run(hypervisor)) {
+                int guest_status;
+
+                params->exec_fd = safe_close(params->exec_fd);
+                params->handoff_timestamp_fd = safe_close(params->handoff_timestamp_fd);
+                executable_fd = safe_close(executable_fd);
+
+                r = exec_hypervisor_run(hypervisor, &guest_status);
+                if (r < 0) {
+                        *exit_status = EXIT_KVM;
+                        return log_error_errno(r, "KVM guest execution failed: %m");
+                }
+
+                hypervisor = exec_hypervisor_free(hypervisor);
+                _exit(guest_status);
+        }
 
         r = fexecve_or_execve(executable_fd, executable, final_argv, accum_env);
 

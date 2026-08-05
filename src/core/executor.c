@@ -11,6 +11,7 @@
 #include "cgroup.h"
 #include "dlopen-note.h"
 #include "dynamic-user.h"
+#include "env-util.h"
 #include "exec-invoke.h"
 #include "execute.h"
 #include "execute-serialize.h"
@@ -183,6 +184,15 @@ static int run(int argc, char *argv[]) {
                                         &cgroup_context);
         if (r < 0)
                 return log_error_errno(r, "Failed to deserialize: %m");
+
+        r = getenv_bool("SYSTEMD_EXECUTOR_HYPERVISOR_PROBE");
+        if (r >= 0) {
+                if (unsetenv("SYSTEMD_EXECUTOR_HYPERVISOR_PROBE") < 0)
+                        return log_error_errno(errno, "Failed to remove hypervisor probe environment variable: %m");
+                if (r > 0)
+                        params.flags |= EXEC_HYPERVISOR_PROBE;
+        } else if (r != -ENXIO)
+                return log_error_errno(r, "Failed to parse $SYSTEMD_EXECUTOR_HYPERVISOR_PROBE: %m");
 
         LOG_CONTEXT_PUSH_EXEC(&context, &params);
 

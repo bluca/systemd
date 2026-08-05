@@ -97,6 +97,27 @@ int seccomp_add_syscall_filter_item(
 int seccomp_load_syscall_filter_set(uint32_t default_action, const SyscallFilterSet *set, uint32_t action, bool log_missing);
 int seccomp_load_syscall_filter_set_raw(uint32_t default_action, Hashmap *filter, uint32_t action, bool log_missing);
 
+typedef enum SeccompArgumentExceptionType {
+        SECCOMP_ARGUMENT_EXCEPTION_EQ,
+        SECCOMP_ARGUMENT_EXCEPTION_MASKED_EQ,
+} SeccompArgumentExceptionType;
+
+typedef struct SeccompArgumentException {
+        int syscall;
+        unsigned argument;
+        SeccompArgumentExceptionType type;
+        uint64_t mask;
+        uint64_t value;
+} SeccompArgumentException;
+
+int seccomp_load_syscall_filter_set_raw_with_argument_exceptions(
+                uint32_t default_action,
+                Hashmap *filter,
+                uint32_t action,
+                bool log_missing,
+                const SeccompArgumentException *exceptions,
+                size_t n_exceptions);
+
 typedef enum SeccompParseFlags {
         SECCOMP_PARSE_INVERT     = 1 << 0,
         SECCOMP_PARSE_ALLOW_LIST = 1 << 1,

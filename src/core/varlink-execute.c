@@ -929,6 +929,7 @@ int unit_exec_context_build_json(sd_json_variant **ret, const char *name, void *
                         JSON_BUILD_PAIR_CALLBACK_NON_NULL("BPFDelegatePrograms", private_bpf_delegate_programs_build_json, c),
                         JSON_BUILD_PAIR_CALLBACK_NON_NULL("BPFDelegateAttachments", private_bpf_delegate_attachments_build_json, c),
                         SD_JSON_BUILD_PAIR_BOOLEAN("LockPersonality", c->lock_personality),
+                        SD_JSON_BUILD_PAIR_BOOLEAN("ProtectHypervisor", c->protect_hypervisor),
                         SD_JSON_BUILD_PAIR_BOOLEAN("MemoryDenyWriteExecute", c->memory_deny_write_execute),
                         SD_JSON_BUILD_PAIR_BOOLEAN("RestrictRealtime", c->restrict_realtime),
                         SD_JSON_BUILD_PAIR_BOOLEAN("RestrictSUIDSGID", c->restrict_suid_sgid),

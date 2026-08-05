@@ -73,6 +73,7 @@
 {{type}}.BPFDelegateMaps,                     config_parse_bpf_delegate_maps,                     0,                                  offsetof({{type}}, exec_context.bpf_delegate_maps)
 {{type}}.BPFDelegatePrograms,                 config_parse_bpf_delegate_programs,                 0,                                  offsetof({{type}}, exec_context.bpf_delegate_programs)
 {{type}}.BPFDelegateAttachments,              config_parse_bpf_delegate_attachments,              0,                                  offsetof({{type}}, exec_context.bpf_delegate_attachments)
+{{type}}.ProtectHypervisor,                   config_parse_bool,                                  0,                                  offsetof({{type}}, exec_context.protect_hypervisor)
 {% if HAVE_SECCOMP %}
 {{type}}.SystemCallFilter,                    config_parse_syscall_filter,                        0,                                  offsetof({{type}}, exec_context)
 {{type}}.SystemCallArchitectures,             config_parse_syscall_archs,                         0,                                  offsetof({{type}}, exec_context.syscall_archs)
