@@ -1790,6 +1790,10 @@ static int exec_context_serialize(const ExecContext *c, FILE *f) {
         if (r < 0)
                 return r;
 
+        r = serialize_bool_elide(f, "exec-context-protect-hypervisor", c->protect_hypervisor);
+        if (r < 0)
+                return r;
+
         r = serialize_bool_elide(f, "exec-context-memory-deny-write-execute", c->memory_deny_write_execute);
         if (r < 0)
                 return r;
@@ -2817,6 +2821,11 @@ static int exec_context_deserialize(ExecContext *c, FILE *f) {
                         if (r < 0)
                                 return r;
                         c->ignore_sigpipe = r;
+                } else if ((val = startswith(l, "exec-context-protect-hypervisor="))) {
+                        r = parse_boolean(val);
+                        if (r < 0)
+                                return r;
+                        c->protect_hypervisor = r;
                 } else if ((val = startswith(l, "exec-context-memory-deny-write-execute="))) {
                         r = parse_boolean(val);
                         if (r < 0)

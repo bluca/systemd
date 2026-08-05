@@ -714,6 +714,7 @@ typedef struct TransientExecContextParameters {
         int dynamic_user;
         int ignore_sigpipe;
         int lock_personality;
+        int protect_hypervisor;
         int memory_deny_write_execute;
         int no_new_privileges;
         int remove_ipc;
@@ -1245,6 +1246,7 @@ DEFINE_APPLY_EXEC_STRING(group, "Group");
 DEFINE_APPLY_EXEC_TRISTATE_BOOL(dynamic_user,              "DynamicUser");
 DEFINE_APPLY_EXEC_TRISTATE_BOOL(ignore_sigpipe,            "IgnoreSIGPIPE");
 DEFINE_APPLY_EXEC_TRISTATE_BOOL(lock_personality,          "LockPersonality");
+DEFINE_APPLY_EXEC_TRISTATE_BOOL(protect_hypervisor,        "ProtectHypervisor");
 DEFINE_APPLY_EXEC_TRISTATE_BOOL(memory_deny_write_execute, "MemoryDenyWriteExecute");
 DEFINE_APPLY_EXEC_TRISTATE_BOOL(no_new_privileges,         "NoNewPrivileges");
 DEFINE_APPLY_EXEC_TRISTATE_BOOL(remove_ipc,                "RemoveIPC");
@@ -1400,6 +1402,7 @@ static const TransientExecProperty exec_properties[] = {
         EXEC_PROPERTY_ABSOLUTE_PATH("IPCNamespacePath",       ipc_namespace_path),
         EXEC_PROPERTY_ABSOLUTE_PATH("UserNamespacePath",      user_namespace_path),
         EXEC_PROPERTY_TRISTATE_BOOL("LockPersonality",        lock_personality),
+        EXEC_PROPERTY_TRISTATE_BOOL("ProtectHypervisor",      protect_hypervisor),
         EXEC_PROPERTY_TRISTATE_BOOL("MemoryDenyWriteExecute", memory_deny_write_execute),
         EXEC_PROPERTY_TRISTATE_BOOL("RestrictRealtime",       restrict_realtime),
         EXEC_PROPERTY_TRISTATE_BOOL("RestrictSUIDSGID",       restrict_suid_sgid),

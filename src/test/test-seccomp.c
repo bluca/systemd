@@ -1,14 +1,17 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <fcntl.h>
+#include <linux/kvm.h>
 #include <poll.h>
 #include <stdlib.h>
 #include <sys/eventfd.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/personality.h>
 #include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #if HAVE_VALGRIND_VALGRIND_H
 #include <valgrind/valgrind.h>
@@ -768,6 +771,129 @@ TEST(load_syscall_filter_set_raw) {
                 assert_se(poll(NULL, 0, 0) < 0);
                 assert_se(errno == EILSEQ);
 
+                _exit(EXIT_SUCCESS);
+        }
+}
+
+TEST(load_syscall_filter_set_raw_with_argument_exceptions) {
+        const SeccompArgumentException exceptions[] = {
+                {
+                        .syscall = SCMP_SYS(ioctl),
+                        .argument = 1,
+                        .type = SECCOMP_ARGUMENT_EXCEPTION_MASKED_EQ,
+                        .mask = UINT64_C(0xff00),
+                        .value = (uint64_t) KVMIO << 8,
+                },
+                {
+                        .syscall = SCMP_SYS(ioctl),
+                        .argument = 1,
+                        .type = SECCOMP_ARGUMENT_EXCEPTION_MASKED_EQ,
+                        .mask = UINT64_C(0xff00),
+                        .value = (uint64_t) 'x' << 8,
+                },
+                {
+                        .syscall = SCMP_SYS(ioctl),
+                        .argument = 1,
+                        .type = SECCOMP_ARGUMENT_EXCEPTION_MASKED_EQ,
+                        .mask = UINT64_C(0xff00),
+                        .value = (uint64_t) 'y' << 8,
+                },
+        };
+        int r;
+
+        if (!is_seccomp_available())
+                return (void) log_tests_skipped("Seccomp not available");
+
+        r = ASSERT_OK(pidref_safe_fork("(masked-deny)", FORK_LOG|FORK_WAIT, NULL));
+        if (r == 0) {
+                _cleanup_hashmap_free_ Hashmap *filter = hashmap_new(NULL);
+                _cleanup_close_ int fd = open("/dev/null", O_RDONLY|O_CLOEXEC);
+
+                assert_se(filter);
+                assert_se(fd >= 0);
+                assert_se(proc_set_nnp() >= 0);
+                assert_se(hashmap_put(filter, INT_TO_PTR(SCMP_SYS(ioctl) + 1), INT_TO_PTR(-1)) >= 0);
+                assert_se(seccomp_load_syscall_filter_set_raw_with_argument_exceptions(
+                                  SCMP_ACT_ALLOW,
+                                  filter,
+                                  SCMP_ACT_ERRNO(EUCLEAN),
+                                  true,
+                                  exceptions,
+                                  ELEMENTSOF(exceptions)) >= 0);
+
+                assert_se(ioctl(fd, _IO(KVMIO, 0xff), 0) < 0);
+                assert_se(errno == ENOTTY);
+                assert_se(ioctl(fd, _IO('x', 0xfe), 0) < 0);
+                assert_se(errno == ENOTTY);
+                assert_se(ioctl(fd, _IO('y', 0xfd), 0) < 0);
+                assert_se(errno == ENOTTY);
+                assert_se(ioctl(fd, _IO('z', 0xff), 0) < 0);
+                assert_se(errno == EUCLEAN);
+                _exit(EXIT_SUCCESS);
+        }
+
+        r = ASSERT_OK(pidref_safe_fork("(masked-allow)", FORK_LOG|FORK_WAIT, NULL));
+        if (r == 0) {
+                _cleanup_hashmap_free_ Hashmap *filter = hashmap_new(NULL);
+                _cleanup_close_ int fd = open("/dev/null", O_RDONLY|O_CLOEXEC);
+
+                assert_se(filter);
+                assert_se(fd >= 0);
+                assert_se(proc_set_nnp() >= 0);
+                assert_se(hashmap_put(filter, INT_TO_PTR(SCMP_SYS(exit_group) + 1), INT_TO_PTR(-1)) >= 0);
+                assert_se(seccomp_load_syscall_filter_set_raw_with_argument_exceptions(
+                                  SCMP_ACT_ERRNO(EUCLEAN),
+                                  filter,
+                                  SCMP_ACT_ALLOW,
+                                  true,
+                                  exceptions,
+                                  ELEMENTSOF(exceptions)) >= 0);
+
+                assert_se(ioctl(fd, _IO(KVMIO, 0xff), 0) < 0);
+                assert_se(errno == ENOTTY);
+                assert_se(ioctl(fd, _IO('x', 0xfe), 0) < 0);
+                assert_se(errno == ENOTTY);
+                assert_se(ioctl(fd, _IO('y', 0xfd), 0) < 0);
+                assert_se(errno == ENOTTY);
+                assert_se(ioctl(fd, _IO('z', 0xff), 0) < 0);
+                assert_se(errno == EUCLEAN);
+                _exit(EXIT_SUCCESS);
+        }
+
+        r = ASSERT_OK(pidref_safe_fork("(exact-deny)", FORK_LOG|FORK_WAIT, NULL));
+        if (r == 0) {
+                const SeccompArgumentException exact_exception = {
+                        .syscall = SCMP_SYS(process_vm_readv),
+                        .argument = 0,
+                        .type = SECCOMP_ARGUMENT_EXCEPTION_EQ,
+                        .value = getpid_cached(),
+                };
+                _cleanup_hashmap_free_ Hashmap *filter = hashmap_new(NULL);
+                char source = 'x', destination = 0;
+                const struct iovec local = {
+                        .iov_base = &destination,
+                        .iov_len = 1,
+                };
+                const struct iovec remote = {
+                        .iov_base = &source,
+                        .iov_len = 1,
+                };
+
+                assert_se(filter);
+                assert_se(proc_set_nnp() >= 0);
+                assert_se(hashmap_put(filter, INT_TO_PTR(SCMP_SYS(process_vm_readv) + 1), INT_TO_PTR(-1)) >= 0);
+                assert_se(seccomp_load_syscall_filter_set_raw_with_argument_exceptions(
+                                  SCMP_ACT_ALLOW,
+                                  filter,
+                                  SCMP_ACT_ERRNO(EREMOTEIO),
+                                  true,
+                                  &exact_exception,
+                                  1) >= 0);
+
+                assert_se(process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == 1);
+                assert_se(destination == source);
+                assert_se(process_vm_readv(getppid(), &local, 1, &remote, 1, 0) < 0);
+                assert_se(errno == EREMOTEIO);
                 _exit(EXIT_SUCCESS);
         }
 }

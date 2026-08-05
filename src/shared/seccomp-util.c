@@ -1198,12 +1198,157 @@ int seccomp_load_syscall_filter_set(uint32_t default_action, const SyscallFilter
         return 0;
 }
 
-int seccomp_load_syscall_filter_set_raw(uint32_t default_action, Hashmap* filter, uint32_t action, bool log_missing) {
+static bool seccomp_has_argument_exception(
+                const SeccompArgumentException *exceptions,
+                size_t n_exceptions,
+                int syscall) {
+
+        FOREACH_ARRAY(exception, exceptions, n_exceptions)
+                if (exception->syscall == syscall)
+                        return true;
+
+        return false;
+}
+
+static int seccomp_add_argument_exceptions(
+                scmp_filter_ctx seccomp,
+                uint32_t context_default_action,
+                uint32_t original_action,
+                const SeccompArgumentException *exceptions,
+                size_t n_exceptions,
+                int syscall) {
+
+        struct scmp_arg_cmp fallback;
+        uint64_t masked_values[UINT8_MAX + 1] = {};
+        unsigned argument = UINT_MAX, shift = 0;
+        size_t n_exact = 0, n_masked = 0;
+        uint64_t mask = 0;
+        int r;
+
+        assert(seccomp);
+        assert(exceptions || n_exceptions == 0);
+
+        FOREACH_ARRAY(exception, exceptions, n_exceptions) {
+                struct scmp_arg_cmp comparison;
+
+                if (exception->syscall != syscall)
+                        continue;
+                if (exception->argument >= 6 ||
+                    (argument != UINT_MAX && argument != exception->argument))
+                        return -EINVAL;
+                argument = exception->argument;
+
+                switch (exception->type) {
+                case SECCOMP_ARGUMENT_EXCEPTION_EQ:
+                        comparison = (struct scmp_arg_cmp) {
+                                .arg = exception->argument,
+                                .op = SCMP_CMP_EQ,
+                                .datum_a = exception->value,
+                        };
+                        n_exact++;
+                        break;
+
+                case SECCOMP_ARGUMENT_EXCEPTION_MASKED_EQ:
+                        if (exception->mask == 0 || (exception->value & ~exception->mask) != 0 ||
+                            (mask != 0 && mask != exception->mask))
+                                return -EINVAL;
+                        mask = exception->mask;
+                        comparison = (struct scmp_arg_cmp) {
+                                .arg = exception->argument,
+                                .op = SCMP_CMP_MASKED_EQ,
+                                .datum_a = exception->mask,
+                                .datum_b = exception->value,
+                        };
+                        n_masked++;
+                        break;
+
+                default:
+                        return -EINVAL;
+                }
+
+                if (SCMP_ACT_ALLOW != context_default_action) {
+                        r = sym_seccomp_rule_add_exact(
+                                        seccomp,
+                                        SCMP_ACT_ALLOW,
+                                        syscall,
+                                        1,
+                                        comparison);
+                        if (r < 0 && r != -EDOM)
+                                return r;
+                }
+        }
+        if (argument == UINT_MAX)
+                return 0;
+        if (original_action == context_default_action)
+                return 1;
+        if (n_exact > 1 || (n_exact > 0 && n_masked > 0))
+                return -EINVAL;
+
+        if (n_exact == 1) {
+                const SeccompArgumentException *exact = NULL;
+
+                FOREACH_ARRAY(exception, exceptions, n_exceptions)
+                        if (exception->syscall == syscall &&
+                            exception->type == SECCOMP_ARGUMENT_EXCEPTION_EQ) {
+                                exact = exception;
+                                break;
+                        }
+                assert(exact);
+                fallback = (struct scmp_arg_cmp) {
+                        .arg = argument,
+                        .op = SCMP_CMP_NE,
+                        .datum_a = exact->value,
+                };
+                r = sym_seccomp_rule_add_exact(seccomp, original_action, syscall, 1, fallback);
+                return r < 0 && r != -EDOM ? r : 1;
+        }
+
+        shift = __builtin_ctzll(mask);
+        if (shift > 56 || mask != UINT64_C(0xff) << shift)
+                return -EINVAL;
+        FOREACH_ARRAY(exception, exceptions, n_exceptions)
+                if (exception->syscall == syscall &&
+                    exception->type == SECCOMP_ARGUMENT_EXCEPTION_MASKED_EQ)
+                        masked_values[exception->value >> shift] = 1;
+
+        for (unsigned value = 0; value <= UINT8_MAX; value++) {
+                if (masked_values[value] != 0)
+                        continue;
+
+                fallback = (struct scmp_arg_cmp) {
+                        .arg = argument,
+                        .op = SCMP_CMP_MASKED_EQ,
+                        .datum_a = mask,
+                        .datum_b = (uint64_t) value << shift,
+                };
+                r = sym_seccomp_rule_add_exact(
+                                seccomp,
+                                original_action,
+                                syscall,
+                                1,
+                                fallback);
+                if (r < 0 && r != -EDOM)
+                        return r;
+        }
+
+        return 1;
+}
+
+int seccomp_load_syscall_filter_set_raw_with_argument_exceptions(
+                uint32_t default_action,
+                Hashmap *filter,
+                uint32_t action,
+                bool log_missing,
+                const SeccompArgumentException *exceptions,
+                size_t n_exceptions) {
+
         uint32_t arch, default_action_override;
         int r;
 
         /* Similar to seccomp_load_syscall_filter_set(), but takes a raw Hashmap* of syscalls, instead
          * of a SyscallFilterSet* table. */
+
+        assert(exceptions || n_exceptions == 0);
 
         if (hashmap_isempty(filter) && default_action == SCMP_ACT_ALLOW)
                 return 0;
@@ -1236,6 +1381,24 @@ int seccomp_load_syscall_filter_set_raw(uint32_t default_action, Hashmap* filter
                         else if (error >= 0)
                                 a = SCMP_ACT_ERRNO(error);
 
+                                                if (seccomp_has_argument_exception(exceptions, n_exceptions, id) &&
+                                                        !(a == SCMP_ACT_ALLOW && default_action_override != SCMP_ACT_ALLOW)) {
+                                r = seccomp_add_argument_exceptions(
+                                                seccomp,
+                                                default_action_override,
+                                                a,
+                                                exceptions,
+                                                n_exceptions,
+                                                id);
+                                if (r < 0)
+                                        return log_debug_errno(
+                                                        r,
+                                                        "Failed to add argument exception for syscall %d: %m",
+                                                        id);
+
+                                continue;
+                        }
+
                         r = sym_seccomp_rule_add_exact(seccomp, a, id, 0);
                         if (r < 0) {
                                 /* If the system call is not known on this architecture, then that's
@@ -1253,6 +1416,35 @@ int seccomp_load_syscall_filter_set_raw(uint32_t default_action, Hashmap* filter
                         }
                 }
 
+                FOREACH_ARRAY(exception, exceptions, n_exceptions) {
+                        bool first = true;
+
+                        for (const SeccompArgumentException *previous = exceptions;
+                             previous < exception;
+                             previous++)
+                                if (previous->syscall == exception->syscall) {
+                                        first = false;
+                                        break;
+                                }
+                        if (!first)
+                                continue;
+                        if (hashmap_contains(filter, INT_TO_PTR(exception->syscall + 1)))
+                                continue;
+
+                        r = seccomp_add_argument_exceptions(
+                                        seccomp,
+                                        default_action_override,
+                                        default_action,
+                                        exceptions,
+                                        n_exceptions,
+                                        exception->syscall);
+                        if (r < 0)
+                                return log_debug_errno(
+                                                r,
+                                                "Failed to add argument exception for syscall %d: %m",
+                                                exception->syscall);
+                }
+
                 if (default_action != default_action_override)
                         NULSTR_FOREACH(name, syscall_filter_sets[SYSCALL_FILTER_SET_KNOWN].value) {
                                 int id;
@@ -1263,6 +1455,8 @@ int seccomp_load_syscall_filter_set_raw(uint32_t default_action, Hashmap* filter
 
                                 /* Ignore the syscall if it was already handled above */
                                 if (hashmap_contains(filter, INT_TO_PTR(id + 1)))
+                                        continue;
+                                if (seccomp_has_argument_exception(exceptions, n_exceptions, id))
                                         continue;
 
                                 r = sym_seccomp_rule_add_exact(seccomp, default_action, id, 0);
@@ -1287,6 +1481,16 @@ int seccomp_load_syscall_filter_set_raw(uint32_t default_action, Hashmap* filter
         }
 
         return 0;
+}
+
+int seccomp_load_syscall_filter_set_raw(uint32_t default_action, Hashmap *filter, uint32_t action, bool log_missing) {
+        return seccomp_load_syscall_filter_set_raw_with_argument_exceptions(
+                        default_action,
+                        filter,
+                        action,
+                        log_missing,
+                        /* exceptions= */ NULL,
+                        /* n_exceptions= */ 0);
 }
 
 int seccomp_parse_syscall_filter(

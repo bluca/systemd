@@ -19,6 +19,7 @@ endif
 
 systemd_executor_sources = files(
         'executor.c',
+        'exec-hypervisor.c',
         'exec-invoke.c',
 )
 

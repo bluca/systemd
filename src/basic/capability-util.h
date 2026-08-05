@@ -44,6 +44,8 @@ static inline bool capability_is_set(uint64_t v) {
 }
 
 int capability_get(CapabilityQuintet *ret);
+int capability_get_bounding(uint64_t *ret);
+int capability_set_effective_permitted(uint64_t effective, uint64_t permitted);
 
 unsigned cap_last_cap(void);
 int have_effective_cap(unsigned cap);

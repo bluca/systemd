@@ -90,9 +90,14 @@ DLSYM_PROTOTYPE(fgetfilecon_raw) = NULL;
 DLSYM_PROTOTYPE(fini_selinuxmnt) = NULL;
 DLSYM_PROTOTYPE(freecon) = NULL;
 DLSYM_PROTOTYPE(getcon_raw) = NULL;
+DLSYM_PROTOTYPE(getexeccon_raw) = NULL;
 DLSYM_PROTOTYPE(getfilecon_raw) = NULL;
+DLSYM_PROTOTYPE(getfscreatecon_raw) = NULL;
+DLSYM_PROTOTYPE(getkeycreatecon_raw) = NULL;
 DLSYM_PROTOTYPE(getpeercon_raw) = NULL;
 DLSYM_PROTOTYPE(getpidcon_raw) = NULL;
+DLSYM_PROTOTYPE(getprevcon_raw) = NULL;
+DLSYM_PROTOTYPE(getsockcreatecon_raw) = NULL;
 DLSYM_PROTOTYPE(is_selinux_enabled) = NULL;
 DLSYM_PROTOTYPE(security_compute_create_raw) = NULL;
 DLSYM_PROTOTYPE(security_getenforce) = NULL;
@@ -138,9 +143,14 @@ int dlopen_libselinux(int log_level) {
                         DLSYM_ARG(fini_selinuxmnt),
                         DLSYM_ARG(freecon),
                         DLSYM_ARG(getcon_raw),
+                        DLSYM_ARG(getexeccon_raw),
                         DLSYM_ARG(getfilecon_raw),
+                        DLSYM_ARG(getfscreatecon_raw),
+                        DLSYM_ARG(getkeycreatecon_raw),
                         DLSYM_ARG(getpeercon_raw),
                         DLSYM_ARG(getpidcon_raw),
+                        DLSYM_ARG(getprevcon_raw),
+                        DLSYM_ARG(getsockcreatecon_raw),
                         DLSYM_ARG(is_selinux_enabled),
                         DLSYM_ARG(security_compute_create_raw),
                         DLSYM_ARG(security_getenforce),
@@ -609,6 +619,41 @@ int mac_selinux_get_create_label_from_exe(const char *exe, char **ret_label) {
                 return -EOPNOTSUPP;
 
         if (sym_getfilecon_raw(exe, &fcon) < 0)
+                return -errno;
+        if (!fcon)
+                return -EOPNOTSUPP;
+
+        sclass = sym_string_to_security_class("process");
+        if (sclass == 0)
+                return -ENOSYS;
+
+        return RET_NERRNO(sym_security_compute_create_raw(mycon, fcon, sclass, ret_label));
+#else
+        return -EOPNOTSUPP;
+#endif
+}
+
+int mac_selinux_get_create_label_from_fd(int fd, char **ret_label) {
+#if HAVE_SELINUX
+        _cleanup_freecon_ char *mycon = NULL, *fcon = NULL;
+        security_class_t sclass;
+        int r;
+
+        assert(fd >= 0);
+        assert(ret_label);
+
+        r = selinux_init(/* force= */ false);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return -EOPNOTSUPP;
+
+        if (sym_getcon_raw(&mycon) < 0)
+                return -errno;
+        if (!mycon)
+                return -EOPNOTSUPP;
+
+        if (sym_fgetfilecon_raw(fd, &fcon) < 0)
                 return -errno;
         if (!fcon)
                 return -EOPNOTSUPP;

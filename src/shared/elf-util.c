@@ -11,6 +11,7 @@
 #include <libelf.h>
 #endif
 #include <unistd.h>
+#include <sys/stat.h>
 
 #include "sd-json.h"
 
@@ -89,6 +90,8 @@ static DLSYM_PROTOTYPE(elf_errmsg) = NULL;
 static DLSYM_PROTOTYPE(elf_errno) = NULL;
 static DLSYM_PROTOTYPE(elf_memory) = NULL;
 static DLSYM_PROTOTYPE(elf_version) = NULL;
+static DLSYM_PROTOTYPE(gelf_fsize) = NULL;
+static DLSYM_PROTOTYPE(gelf_getdyn) = NULL;
 static DLSYM_PROTOTYPE(gelf_getphdr) = NULL;
 static DLSYM_PROTOTYPE(gelf_getnote) = NULL;
 
@@ -173,6 +176,8 @@ int dlopen_elf(int log_level) {
                         DLSYM_ARG(elf_errno),
                         DLSYM_ARG(elf_memory),
                         DLSYM_ARG(elf_version),
+                        DLSYM_ARG(gelf_fsize),
+                        DLSYM_ARG(gelf_getdyn),
                         DLSYM_ARG(gelf_getehdr),
                         DLSYM_ARG(gelf_getphdr),
                         DLSYM_ARG(gelf_getnote));
@@ -216,6 +221,206 @@ static void stack_context_done(StackContext *c) {
 }
 
 DEFINE_TRIVIAL_CLEANUP_FUNC_FULL_RENAME(Elf *, sym_elf_end, elf_endp, NULL);
+
+ElfImage* elf_image_free(ElfImage *image) {
+        if (!image)
+                return NULL;
+
+        free(image->program_headers);
+        free(image->interpreter);
+        return mfree(image);
+}
+
+bool elf_image_is_pie(const ElfImage *image) {
+        return image &&
+                image->type == ET_DYN &&
+                image->n_dynamic_headers == 1 &&
+                image->has_dynamic_flags_1 &&
+                FLAGS_SET(image->dynamic_flags_1, DF_1_PIE);
+}
+
+#if HAVE_ELFUTILS
+
+static int elf_image_read_interpreter(Elf *elf, const GElf_Phdr *phdr, char **ret) {
+        Elf_Data *data;
+        char *nul;
+
+        assert(elf);
+        assert(phdr);
+        assert(ret);
+
+        if (phdr->p_filesz < 2 || phdr->p_filesz > PATH_MAX)
+                return -EBADMSG;
+
+        data = sym_elf_getdata_rawchunk(elf, phdr->p_offset, phdr->p_filesz, ELF_T_BYTE);
+        if (!data || data->d_size != phdr->p_filesz)
+                return -EBADMSG;
+
+        nul = memchr(data->d_buf, 0, data->d_size);
+        if (!nul || nul != (char*) data->d_buf + data->d_size - 1)
+                return -EBADMSG;
+
+        *ret = memdup(data->d_buf, data->d_size);
+        return *ret ? 0 : -ENOMEM;
+}
+
+static int elf_image_read_dynamic(Elf *elf, const GElf_Phdr *phdr, ElfImage *image) {
+        Elf_Data *data;
+        size_t entry_size, n_entries;
+        bool terminated = false;
+
+        assert(elf);
+        assert(phdr);
+        assert(image);
+
+        entry_size = sym_gelf_fsize(elf, ELF_T_DYN, 1, EV_CURRENT);
+        if (entry_size == 0 || phdr->p_filesz == 0 || phdr->p_filesz % entry_size != 0)
+                return -EBADMSG;
+        if (phdr->p_filesz > SIZE_MAX)
+                return -E2BIG;
+
+        data = sym_elf_getdata_rawchunk(elf, phdr->p_offset, phdr->p_filesz, ELF_T_DYN);
+        if (!data || data->d_size != phdr->p_filesz)
+                return -EBADMSG;
+
+        n_entries = data->d_size / entry_size;
+        if (n_entries > INT_MAX)
+                return -E2BIG;
+
+        for (size_t i = 0; i < n_entries; i++) {
+                GElf_Dyn dynamic;
+
+                if (!sym_gelf_getdyn(data, i, &dynamic))
+                        return -EBADMSG;
+                if (dynamic.d_tag == DT_NULL) {
+                        terminated = true;
+                        break;
+                }
+                if (dynamic.d_tag != DT_FLAGS_1)
+                        continue;
+                if (image->has_dynamic_flags_1)
+                        return -EBADMSG;
+
+                image->dynamic_flags_1 = dynamic.d_un.d_val;
+                image->has_dynamic_flags_1 = true;
+        }
+
+        return terminated ? 0 : -EBADMSG;
+}
+
+#endif
+
+int elf_image_read(int fd, ElfImage **ret) {
+#if HAVE_ELFUTILS
+        _cleanup_(elf_image_freep) ElfImage *image = NULL;
+        _cleanup_(elf_endp) Elf *elf = NULL;
+        _cleanup_close_ int read_fd = -EBADF;
+        struct stat st;
+        GElf_Ehdr ehdr;
+        size_t n_program_headers;
+        int r;
+
+        assert(fd >= 0);
+        assert(ret);
+
+        r = dlopen_elf(LOG_DEBUG);
+        if (r < 0)
+                return r;
+
+        read_fd = fd_reopen(fd, O_RDONLY|O_CLOEXEC);
+        if (read_fd < 0)
+                return read_fd;
+
+        if (fstat(read_fd, &st) < 0)
+                return -errno;
+        if (st.st_size < 0)
+                return -EBADMSG;
+        if (lseek(read_fd, 0, SEEK_SET) < 0)
+                return -errno;
+
+        if (sym_elf_version(EV_CURRENT) == EV_NONE)
+                return -EOPNOTSUPP;
+
+        elf = sym_elf_begin(read_fd, ELF_C_READ_MMAP, NULL);
+        if (!elf)
+                return -EBADMSG;
+        if (!sym_gelf_getehdr(elf, &ehdr))
+                return -EBADMSG;
+
+        r = sym_elf_getphdrnum(elf, &n_program_headers);
+        if (r < 0)
+                return -EBADMSG;
+        if (n_program_headers > UINT16_MAX)
+                return -E2BIG;
+
+        image = new(ElfImage, 1);
+        if (!image)
+                return -ENOMEM;
+
+        *image = (ElfImage) {
+                .elf_class = ehdr.e_ident[EI_CLASS],
+                .data_encoding = ehdr.e_ident[EI_DATA],
+                .type = ehdr.e_type,
+                .machine = ehdr.e_machine,
+                .version = ehdr.e_version,
+                .entry = ehdr.e_entry,
+                .program_header_offset = ehdr.e_phoff,
+                .program_header_entry_size = ehdr.e_phentsize,
+                .flags = ehdr.e_flags,
+                .n_program_headers = n_program_headers,
+        };
+
+        image->program_headers = new(ElfProgramHeader, n_program_headers);
+        if (!image->program_headers && n_program_headers > 0)
+                return -ENOMEM;
+
+        for (size_t i = 0; i < n_program_headers; i++) {
+                GElf_Off end;
+                GElf_Phdr phdr;
+
+                if (!sym_gelf_getphdr(elf, i, &phdr))
+                        return -EBADMSG;
+                if (!ADD_SAFE(&end, phdr.p_offset, phdr.p_filesz) || end > (uint64_t) st.st_size)
+                        return -EBADMSG;
+
+                image->program_headers[i] = (ElfProgramHeader) {
+                        .type = phdr.p_type,
+                        .flags = phdr.p_flags,
+                        .offset = phdr.p_offset,
+                        .virtual_address = phdr.p_vaddr,
+                        .physical_address = phdr.p_paddr,
+                        .file_size = phdr.p_filesz,
+                        .memory_size = phdr.p_memsz,
+                        .alignment = phdr.p_align,
+                };
+
+                if (phdr.p_type == PT_INTERP) {
+                        if (image->interpreter)
+                                return -EBADMSG;
+
+                        r = elf_image_read_interpreter(elf, &phdr, &image->interpreter);
+                        if (r < 0)
+                                return r;
+                } else if (phdr.p_type == PT_DYNAMIC) {
+                        image->n_dynamic_headers++;
+                        if (image->n_dynamic_headers > 1)
+                                return -EBADMSG;
+
+                        r = elf_image_read_dynamic(elf, &phdr, image);
+                        if (r < 0)
+                                return r;
+                }
+        }
+
+        *ret = TAKE_PTR(image);
+        return 0;
+#else
+        assert(fd >= 0);
+        assert(ret);
+
+        return -EOPNOTSUPP;
+#endif
+}
 
 static int frame_callback(Dwfl_Frame *frame, void *userdata) {
         StackContext *c = ASSERT_PTR(userdata);
