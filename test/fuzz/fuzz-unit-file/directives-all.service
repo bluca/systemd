@@ -881,6 +881,7 @@ MaxLevelSocket=
 MaxRetentionSec=
 MaxUse=
 MemoryDenyWriteExecute=
+ProtectHypervisor=
 MountFlags=
 NAME=
 NAutoVTs=

@@ -2578,6 +2578,7 @@ static const BusProperty execute_properties[] = {
         { "PrivateIPC",                            bus_append_parse_boolean                      },
         { "NoNewPrivileges",                       bus_append_parse_boolean                      },
         { "SyslogLevelPrefix",                     bus_append_parse_boolean                      },
+        { "ProtectHypervisor",                     bus_append_parse_boolean                      },
         { "MemoryDenyWriteExecute",                bus_append_parse_boolean                      },
         { "RestrictRealtime",                      bus_append_parse_boolean                      },
         { "DynamicUser",                           bus_append_parse_boolean                      },

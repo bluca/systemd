@@ -71,6 +71,8 @@ enum {
         EXIT_BPF,
         EXIT_KSM,
         EXIT_MEMORY_THP,
+        _EXIT_RESERVED3, /* used by the integration test wrapper for QEMU crashes, don't reuse */
+        EXIT_KVM,
 
         EXIT_EXCEPTION = 255,  /* Whenever we want to propagate an abnormal/signal exit, in line with bash */
 };

@@ -66,6 +66,40 @@ static int capability_apply(const CapabilityQuintet *q) {
         return RET_NERRNO(syscall(SYS_capset, &hdr, data));
 }
 
+int capability_get_bounding(uint64_t *ret) {
+        uint64_t bounding = 0;
+
+        assert(ret);
+
+        for (unsigned capability = 0; capability <= cap_last_cap(); capability++) {
+                int r;
+
+                r = prctl_safe(PR_CAPBSET_READ, capability, 0, 0, 0);
+                if (r < 0)
+                        return r;
+                if (r > 0)
+                        SET_BIT(bounding, capability);
+        }
+
+        *ret = bounding;
+        return 0;
+}
+
+int capability_set_effective_permitted(uint64_t effective, uint64_t permitted) {
+        CapabilityQuintet q;
+        int r;
+
+        assert((effective & ~permitted) == 0);
+
+        r = capability_get(&q);
+        if (r < 0)
+                return r;
+
+        q.effective = effective;
+        q.permitted = permitted;
+        return capability_apply(&q);
+}
+
 unsigned cap_last_cap(void) {
         static atomic_int saved = INT_MAX;
         int r, c;

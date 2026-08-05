@@ -355,6 +355,7 @@ typedef struct ExecContext {
         bool dynamic_user;
         bool remove_ipc;
 
+        bool protect_hypervisor;
         bool memory_deny_write_execute;
         bool restrict_realtime;
         bool restrict_suid_sgid;
@@ -412,6 +413,7 @@ typedef enum ExecFlags {
         EXEC_SETENV_RESULT           = 1 << 12,
         EXEC_SET_WATCHDOG            = 1 << 13,
         EXEC_SETENV_MONITOR_RESULT   = 1 << 14, /* Pass exit status to OnFailure= and OnSuccess= dependencies. */
+        EXEC_HYPERVISOR_PROBE        = 1 << 15, /* Internal implementation probe, not a public unit setting. */
 } ExecFlags;
 
 /* Parameters for a specific invocation of a command. This structure is put together right before a command is
