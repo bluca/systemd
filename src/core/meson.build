@@ -20,6 +20,13 @@ endif
 systemd_executor_sources = files(
         'executor.c',
         'exec-hypervisor.c',
+        'exec-hypervisor-image.c',
+        'exec-hypervisor-process.c',
+        'exec-hypervisor-signal.c',
+        'exec-hypervisor-syscall.c',
+        'exec-hypervisor-userfault.c',
+        'exec-hypervisor-vcpu.c',
+        'exec-hypervisor-vma.c',
         'exec-invoke.c',
 )
 
