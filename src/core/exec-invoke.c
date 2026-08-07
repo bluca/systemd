@@ -1628,6 +1628,15 @@ static bool skip_seccomp_unavailable(const char *msg) {
 
 static int apply_syscall_filter(const ExecContext *c, const ExecParameters *p, ExecHypervisor *hypervisor) {
         _cleanup_hashmap_free_ Hashmap *host_filter = NULL;
+        const SeccompArgumentException protected_task_exceptions[] = {
+                {
+                        .syscall = SCMP_SYS(ioctl),
+                        .argument = 1,
+                        .type = SECCOMP_ARGUMENT_EXCEPTION_MASKED_EQ,
+                        .mask = UINT64_C(0xff00),
+                        .value = (uint64_t) KVMIO << 8,
+                },
+        };
         const SeccompArgumentException runtime_exceptions[] = {
                 {
                         .syscall = SCMP_SYS(ioctl),
@@ -1651,6 +1660,8 @@ static int apply_syscall_filter(const ExecContext *c, const ExecParameters *p, E
                         .value = (uint64_t) _IOC_TYPE(UFFDIO_API) << 8,
                 },
         };
+        const SeccompArgumentException *exceptions = NULL;
+        size_t n_exceptions = 0;
         uint32_t negative_action, default_action, action;
         int r;
 
@@ -1771,13 +1782,21 @@ static int apply_syscall_filter(const ExecContext *c, const ExecParameters *p, E
                 }
         }
 
+        if (exec_hypervisor_uses_kernel_backend(hypervisor)) {
+                exceptions = protected_task_exceptions;
+                n_exceptions = ELEMENTSOF(protected_task_exceptions);
+        } else if (exec_hypervisor_can_run(hypervisor)) {
+                exceptions = runtime_exceptions;
+                n_exceptions = ELEMENTSOF(runtime_exceptions);
+        }
+
         return seccomp_load_syscall_filter_set_raw_with_argument_exceptions(
                         default_action,
                         host_filter,
                         action,
                         false,
-                        exec_hypervisor_can_run(hypervisor) ? runtime_exceptions : NULL,
-                        exec_hypervisor_can_run(hypervisor) ? ELEMENTSOF(runtime_exceptions) : 0);
+                        exceptions,
+                        n_exceptions);
 }
 
 static int finalize_capabilities_for_hypervisor_exec(uint64_t ambient) {
@@ -5485,7 +5504,7 @@ int exec_invoke(
                         return log_error_errno(r, "Failed to probe KVM executor support: %m");
                 }
                 if (r > 0) {
-                        r = add_shifted_fd(&keep_fds, &n_keep_fds, exec_hypervisor_kvm_fd(hypervisor));
+                        r = add_shifted_fd(&keep_fds, &n_keep_fds, exec_hypervisor_control_fd(hypervisor));
                         if (r < 0) {
                                 *exit_status = EXIT_FDS;
                                 return log_error_errno(r, "Failed to retain KVM file descriptor: %m");
@@ -6622,13 +6641,15 @@ int exec_invoke(
         }
 
 #if HAVE_SELINUX && HAVE_APPARMOR
-        if (hypervisor && use_selinux && use_apparmor) {
+        if (hypervisor &&
+            !exec_hypervisor_uses_kernel_backend(hypervisor) &&
+            use_selinux && use_apparmor) {
                 log_debug("Simultaneous SELinux and AppArmor use is unsupported for KVM execution, using native execution.");
                 hypervisor = exec_hypervisor_free(hypervisor);
         }
 #endif
 
-        if (hypervisor) {
+        if (hypervisor && !exec_hypervisor_uses_kernel_backend(hypervisor)) {
                 r = exec_hypervisor_prepare_image(hypervisor, executable_fd, command->path);
                 if (r < 0) {
                         *exit_status = EXIT_KVM;
@@ -7154,7 +7175,35 @@ int exec_invoke(
                 _exit(guest_status);
         }
 
-        r = fexecve_or_execve(executable_fd, executable, final_argv, accum_env);
+        if (exec_hypervisor_uses_kernel_backend(hypervisor)) {
+                r = exec_hypervisor_arm_exec(hypervisor);
+                if (r < 0) {
+                        (void) exec_fd_mark_hot(context, params, /* hot= */ false, /* reterr_exit_status= */ NULL);
+                        *exit_status = EXIT_KVM;
+                        return log_error_errno(r, "Failed to arm kernel protected execution: %m");
+                }
+
+#if ENABLE_FEXECVE
+                execveat(executable_fd, "", final_argv, accum_env, AT_EMPTY_PATH);
+                if (!IN_SET(errno, ENOSYS, ENOENT) && !ERRNO_IS_PRIVILEGE(errno))
+                        r = -errno;
+                else {
+                        r = exec_hypervisor_arm_exec(hypervisor);
+                        if (r < 0) {
+                                (void) exec_fd_mark_hot(context, params, /* hot= */ false, /* reterr_exit_status= */ NULL);
+                                *exit_status = EXIT_KVM;
+                                return log_error_errno(r, "Failed to rearm kernel protected execution: %m");
+                        }
+
+                        execve(executable, final_argv, accum_env);
+                        r = -errno;
+                }
+#else
+                execve(executable, final_argv, accum_env);
+                r = -errno;
+#endif
+        } else
+                r = fexecve_or_execve(executable_fd, executable, final_argv, accum_env);
 
         /* The execve() failed, let's undo the marking as hot */
         (void) exec_fd_mark_hot(context, params, /* hot= */ false, /* reterr_exit_status= */ NULL);

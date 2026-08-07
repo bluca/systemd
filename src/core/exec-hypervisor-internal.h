@@ -780,6 +780,7 @@ struct ExecHypervisor {
         bool terminate_for_exec;
         bool vcpu_in_guest;
         bool selected;
+        bool protected_task;
 };
 
 ExecHypervisor* exec_hypervisor_machine(ExecHypervisor *h);
