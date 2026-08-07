@@ -693,20 +693,15 @@ int exec_hypervisor_open_existing(ExecHypervisor *source, ExecHypervisor **ret) 
 int exec_hypervisor_open_system(ExecHypervisor **ret) {
 #if defined(__x86_64__)
         _cleanup_(exec_hypervisor_freep) ExecHypervisor *h = NULL;
+        struct kvm_protected_task_create create = {
+                .size = sizeof(create),
+                .required_features = KVM_PROTECTED_TASK_FEATURE_EXEC,
+        };
         unsigned n_memslots;
         uint64_t guest_xcomp_permissions;
-        int api_version, r, xsave2_size;
+        int api_version, protected_task_fd, r, xsave2_size;
 
         assert(ret);
-
-        r = dlopen_elf(LOG_DEBUG);
-        if (r < 0) {
-                if (r == -ENOMEM)
-                        return r;
-
-                log_debug_errno(r, "libelf is unavailable, using native execution: %m");
-                return 0;
-        }
 
         r = exec_hypervisor_new(&h);
         if (r < 0)
@@ -727,6 +722,43 @@ int exec_hypervisor_open_system(ExecHypervisor **ret) {
                 return -errno;
         if (api_version != KVM_API_VERSION) {
                 log_debug("KVM API version %d is unsupported, using native execution.", api_version);
+                return 0;
+        }
+
+        r = ioctl(h->kvm_fd, KVM_CHECK_EXTENSION, KVM_CAP_PROTECTED_TASK);
+        if (r < 0)
+                return -errno;
+        if (r > 0) {
+                protected_task_fd = ioctl(h->kvm_fd, KVM_CREATE_PROTECTED_TASK, &create);
+                if (protected_task_fd >= 0) {
+                        if (!FLAGS_SET(create.supported_features, KVM_PROTECTED_TASK_FEATURE_EXEC)) {
+                                safe_close(protected_task_fd);
+                                return -EPROTO;
+                        }
+
+                        h->kvm_fd = safe_close(h->kvm_fd);
+                        h->kvm_fd = protected_task_fd;
+                        h->protected_task = true;
+                        log_debug("Kernel protected-task execution is available.");
+
+                        *ret = TAKE_PTR(h);
+                        return 1;
+                }
+                if (!IN_SET(errno, EINVAL, ENOSYS, ENOTTY, EOPNOTSUPP))
+                        return -errno;
+
+                log_debug_errno(
+                                errno,
+                                "Kernel protected-task execution is unavailable, using userspace KVM execution: %m");
+        } else
+                log_debug("Kernel protected-task execution is unavailable, using userspace KVM execution.");
+
+        r = dlopen_elf(LOG_DEBUG);
+        if (r < 0) {
+                if (r == -ENOMEM)
+                        return r;
+
+                log_debug_errno(r, "libelf is unavailable, using native execution: %m");
                 return 0;
         }
 
