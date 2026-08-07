@@ -336,7 +336,7 @@ ExecHypervisor* exec_hypervisor_free(ExecHypervisor *h) {
         return mfree(h);
 }
 
-int* exec_hypervisor_kvm_fd(ExecHypervisor *h) {
+int* exec_hypervisor_control_fd(ExecHypervisor *h) {
         assert(h);
 
         return &h->kvm_fd;
@@ -516,6 +516,25 @@ bool exec_hypervisor_can_run(const ExecHypervisor *h) {
         return h && h->selected && h->image;
 }
 
+bool exec_hypervisor_uses_kernel_backend(const ExecHypervisor *h) {
+        return h && h->protected_task;
+}
+
+int exec_hypervisor_arm_exec(ExecHypervisor *h) {
+        struct kvm_protected_task_arm arm = {
+                .size = sizeof(arm),
+        };
+
+        assert(exec_hypervisor_uses_kernel_backend(h));
+
+        if (ioctl(h->kvm_fd, KVM_PT_CANCEL_ARM, 0) < 0 && errno != ENOENT)
+                return -errno;
+        if (ioctl(h->kvm_fd, KVM_PT_ARM_EXEC, &arm) < 0)
+                return -errno;
+
+        return 0;
+}
+
 void exec_hypervisor_set_secure_exec(ExecHypervisor *h, bool secure_exec) {
         assert(exec_hypervisor_can_run(h));
 
@@ -581,6 +600,16 @@ bool exec_hypervisor_can_run(const ExecHypervisor *h) {
         return false;
 }
 
+bool exec_hypervisor_uses_kernel_backend(const ExecHypervisor *h) {
+        return false;
+}
+
+int exec_hypervisor_arm_exec(ExecHypervisor *h) {
+        assert(h);
+
+        return -EOPNOTSUPP;
+}
+
 void exec_hypervisor_set_secure_exec(ExecHypervisor *h, bool secure_exec) {
         assert(h);
 }
@@ -609,7 +638,7 @@ int exec_hypervisor_run(ExecHypervisor *h, int *ret_status) {
         return -EOPNOTSUPP;
 }
 
-int* exec_hypervisor_kvm_fd(ExecHypervisor *h) {
+int* exec_hypervisor_control_fd(ExecHypervisor *h) {
         assert(h);
 
         return NULL;

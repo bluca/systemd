@@ -11,11 +11,13 @@ int exec_hypervisor_prepare_image(ExecHypervisor *h, int executable_fd, const ch
 int exec_hypervisor_create_machine(ExecHypervisor *h);
 int exec_hypervisor_run_probe(ExecHypervisor *h);
 bool exec_hypervisor_can_run(const ExecHypervisor *h);
+bool exec_hypervisor_uses_kernel_backend(const ExecHypervisor *h);
+int exec_hypervisor_arm_exec(ExecHypervisor *h);
 void exec_hypervisor_set_secure_exec(ExecHypervisor *h, bool secure_exec);
 int exec_hypervisor_prepare_stack(ExecHypervisor *h, char *const argv[], char *const envp[]);
 int exec_hypervisor_set_syscall_filter(ExecHypervisor *h, Hashmap *filter, bool allow_list, int errno_or_action);
 int exec_hypervisor_run(ExecHypervisor *h, int *ret_status);
-int* exec_hypervisor_kvm_fd(ExecHypervisor *h);
+int* exec_hypervisor_control_fd(ExecHypervisor *h);
 
 ExecHypervisor* exec_hypervisor_free(ExecHypervisor *h);
 DEFINE_TRIVIAL_CLEANUP_FUNC(ExecHypervisor*, exec_hypervisor_free);
