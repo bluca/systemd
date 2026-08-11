@@ -1628,14 +1628,13 @@ static bool skip_seccomp_unavailable(const char *msg) {
 
 static int apply_syscall_filter(const ExecContext *c, const ExecParameters *p, ExecHypervisor *hypervisor) {
         _cleanup_hashmap_free_ Hashmap *host_filter = NULL;
-        const SeccompArgumentException protected_task_exceptions[] = {
-                {
-                        .syscall = SCMP_SYS(ioctl),
-                        .argument = 1,
-                        .type = SECCOMP_ARGUMENT_EXCEPTION_MASKED_EQ,
-                        .mask = UINT64_C(0xff00),
-                        .value = (uint64_t) KVMIO << 8,
-                },
+        SeccompArgumentException protected_task_exception = {
+                .syscall = SCMP_SYS(ioctl),
+                .argument = 1,
+                .type = SECCOMP_ARGUMENT_EXCEPTION_EQ,
+                .value = KVM_PT_ARM_EXEC,
+                .and_argument_set = true,
+                .and_argument = 0,
         };
         const SeccompArgumentException runtime_exceptions[] = {
                 {
@@ -1783,8 +1782,13 @@ static int apply_syscall_filter(const ExecContext *c, const ExecParameters *p, E
         }
 
         if (exec_hypervisor_uses_kernel_backend(hypervisor)) {
-                exceptions = protected_task_exceptions;
-                n_exceptions = ELEMENTSOF(protected_task_exceptions);
+                int *control_fd = ASSERT_PTR(exec_hypervisor_control_fd(hypervisor));
+
+                assert(*control_fd >= 0);
+
+                protected_task_exception.and_value = *control_fd;
+                exceptions = &protected_task_exception;
+                n_exceptions = 1;
         } else if (exec_hypervisor_can_run(hypervisor)) {
                 exceptions = runtime_exceptions;
                 n_exceptions = ELEMENTSOF(runtime_exceptions);
