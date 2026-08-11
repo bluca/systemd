@@ -527,8 +527,6 @@ int exec_hypervisor_arm_exec(ExecHypervisor *h) {
 
         assert(exec_hypervisor_uses_kernel_backend(h));
 
-        if (ioctl(h->kvm_fd, KVM_PT_CANCEL_ARM, 0) < 0 && errno != ENOENT)
-                return -errno;
         if (ioctl(h->kvm_fd, KVM_PT_ARM_EXEC, &arm) < 0)
                 return -errno;
 
