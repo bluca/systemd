@@ -108,6 +108,10 @@ typedef struct SeccompArgumentException {
         SeccompArgumentExceptionType type;
         uint64_t mask;
         uint64_t value;
+        /* Optionally require an exact match on a second argument. */
+        bool and_argument_set;
+        unsigned and_argument;
+        uint64_t and_value;
 } SeccompArgumentException;
 
 int seccomp_load_syscall_filter_set_raw_with_argument_exceptions(

@@ -1210,6 +1210,35 @@ static bool seccomp_has_argument_exception(
         return false;
 }
 
+static int seccomp_rule_add_exact_with_comparisons(
+                scmp_filter_ctx seccomp,
+                uint32_t action,
+                int syscall,
+                const struct scmp_arg_cmp *comparisons,
+                size_t n_comparisons) {
+
+        assert(seccomp);
+        assert(comparisons);
+
+        if (n_comparisons == 1)
+                return sym_seccomp_rule_add_exact(
+                                seccomp,
+                                action,
+                                syscall,
+                                1,
+                                comparisons[0]);
+        if (n_comparisons == 2)
+                return sym_seccomp_rule_add_exact(
+                                seccomp,
+                                action,
+                                syscall,
+                                2,
+                                comparisons[0],
+                                comparisons[1]);
+
+        assert_not_reached();
+}
+
 static int seccomp_add_argument_exceptions(
                 scmp_filter_ctx seccomp,
                 uint32_t context_default_action,
@@ -1218,29 +1247,50 @@ static int seccomp_add_argument_exceptions(
                 size_t n_exceptions,
                 int syscall) {
 
-        struct scmp_arg_cmp fallback;
+        struct scmp_arg_cmp fallback[2];
         uint64_t masked_values[UINT8_MAX + 1] = {};
-        unsigned argument = UINT_MAX, shift = 0;
-        size_t n_exact = 0, n_masked = 0;
-        uint64_t mask = 0;
+        unsigned argument = UINT_MAX, and_argument = UINT_MAX, shift = 0;
+        size_t fallback_index = 0, n_exact = 0, n_masked = 0;
+        uint64_t and_value = 0, mask = 0;
         int r;
 
         assert(seccomp);
         assert(exceptions || n_exceptions == 0);
 
         FOREACH_ARRAY(exception, exceptions, n_exceptions) {
-                struct scmp_arg_cmp comparison;
+                struct scmp_arg_cmp comparisons[2];
+                size_t n_comparisons = 1;
 
                 if (exception->syscall != syscall)
                         continue;
                 if (exception->argument >= 6 ||
                     (argument != UINT_MAX && argument != exception->argument))
                         return -EINVAL;
+
+                if (exception->and_argument_set) {
+                        if (exception->and_argument >= 6 ||
+                            exception->and_argument == exception->argument ||
+                            (argument != UINT_MAX && and_argument == UINT_MAX) ||
+                            (and_argument != UINT_MAX &&
+                             (and_argument != exception->and_argument || and_value != exception->and_value)))
+                                return -EINVAL;
+
+                        and_argument = exception->and_argument;
+                        and_value = exception->and_value;
+                        comparisons[1] = (struct scmp_arg_cmp) {
+                                .arg = and_argument,
+                                .op = SCMP_CMP_EQ,
+                                .datum_a = and_value,
+                        };
+                        n_comparisons++;
+                } else if (and_argument != UINT_MAX)
+                        return -EINVAL;
+
                 argument = exception->argument;
 
                 switch (exception->type) {
                 case SECCOMP_ARGUMENT_EXCEPTION_EQ:
-                        comparison = (struct scmp_arg_cmp) {
+                        comparisons[0] = (struct scmp_arg_cmp) {
                                 .arg = exception->argument,
                                 .op = SCMP_CMP_EQ,
                                 .datum_a = exception->value,
@@ -1253,7 +1303,7 @@ static int seccomp_add_argument_exceptions(
                             (mask != 0 && mask != exception->mask))
                                 return -EINVAL;
                         mask = exception->mask;
-                        comparison = (struct scmp_arg_cmp) {
+                        comparisons[0] = (struct scmp_arg_cmp) {
                                 .arg = exception->argument,
                                 .op = SCMP_CMP_MASKED_EQ,
                                 .datum_a = exception->mask,
@@ -1267,12 +1317,12 @@ static int seccomp_add_argument_exceptions(
                 }
 
                 if (SCMP_ACT_ALLOW != context_default_action) {
-                        r = sym_seccomp_rule_add_exact(
+                        r = seccomp_rule_add_exact_with_comparisons(
                                         seccomp,
                                         SCMP_ACT_ALLOW,
                                         syscall,
-                                        1,
-                                        comparison);
+                                        comparisons,
+                                        n_comparisons);
                         if (r < 0 && r != -EDOM)
                                 return r;
                 }
@@ -1284,6 +1334,29 @@ static int seccomp_add_argument_exceptions(
         if (n_exact > 1 || (n_exact > 0 && n_masked > 0))
                 return -EINVAL;
 
+        if (and_argument != UINT_MAX) {
+                fallback[0] = (struct scmp_arg_cmp) {
+                        .arg = and_argument,
+                        .op = SCMP_CMP_NE,
+                        .datum_a = and_value,
+                };
+                r = seccomp_rule_add_exact_with_comparisons(
+                                seccomp,
+                                original_action,
+                                syscall,
+                                fallback,
+                                1);
+                if (r < 0 && r != -EDOM)
+                        return r;
+
+                fallback[0] = (struct scmp_arg_cmp) {
+                        .arg = and_argument,
+                        .op = SCMP_CMP_EQ,
+                        .datum_a = and_value,
+                };
+                fallback_index = 1;
+        }
+
         if (n_exact == 1) {
                 const SeccompArgumentException *exact = NULL;
 
@@ -1294,12 +1367,17 @@ static int seccomp_add_argument_exceptions(
                                 break;
                         }
                 assert(exact);
-                fallback = (struct scmp_arg_cmp) {
+                fallback[fallback_index] = (struct scmp_arg_cmp) {
                         .arg = argument,
                         .op = SCMP_CMP_NE,
                         .datum_a = exact->value,
                 };
-                r = sym_seccomp_rule_add_exact(seccomp, original_action, syscall, 1, fallback);
+                r = seccomp_rule_add_exact_with_comparisons(
+                                seccomp,
+                                original_action,
+                                syscall,
+                                fallback,
+                                fallback_index + 1);
                 return r < 0 && r != -EDOM ? r : 1;
         }
 
@@ -1315,18 +1393,18 @@ static int seccomp_add_argument_exceptions(
                 if (masked_values[value] != 0)
                         continue;
 
-                fallback = (struct scmp_arg_cmp) {
+                fallback[fallback_index] = (struct scmp_arg_cmp) {
                         .arg = argument,
                         .op = SCMP_CMP_MASKED_EQ,
                         .datum_a = mask,
                         .datum_b = (uint64_t) value << shift,
                 };
-                r = sym_seccomp_rule_add_exact(
+                r = seccomp_rule_add_exact_with_comparisons(
                                 seccomp,
                                 original_action,
                                 syscall,
-                                1,
-                                fallback);
+                                fallback,
+                                fallback_index + 1);
                 if (r < 0 && r != -EDOM)
                         return r;
         }

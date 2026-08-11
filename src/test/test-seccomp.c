@@ -776,6 +776,10 @@ TEST(load_syscall_filter_set_raw) {
 }
 
 TEST(load_syscall_filter_set_raw_with_argument_exceptions) {
+        static const char * const compound_modes[] = {
+                "compound-deny",
+                "compound-allow",
+        };
         const SeccompArgumentException exceptions[] = {
                 {
                         .syscall = SCMP_SYS(ioctl),
@@ -895,6 +899,51 @@ TEST(load_syscall_filter_set_raw_with_argument_exceptions) {
                 assert_se(process_vm_readv(getppid(), &local, 1, &remote, 1, 0) < 0);
                 assert_se(errno == EREMOTEIO);
                 _exit(EXIT_SUCCESS);
+        }
+
+        FOREACH_ELEMENT(mode, compound_modes) {
+                r = ASSERT_OK(pidref_safe_fork(*mode, FORK_LOG|FORK_WAIT, NULL));
+                if (r == 0) {
+                        _cleanup_hashmap_free_ Hashmap *filter = hashmap_new(NULL);
+                        _cleanup_close_ int fd = open("/dev/null", O_RDONLY|O_CLOEXEC);
+                        _cleanup_close_ int other_fd = open("/dev/null", O_RDONLY|O_CLOEXEC);
+                        const SeccompArgumentException compound_exception = {
+                                .syscall = SCMP_SYS(ioctl),
+                                .argument = 1,
+                                .type = SECCOMP_ARGUMENT_EXCEPTION_EQ,
+                                .value = KVM_PT_ARM_EXEC,
+                                .and_argument_set = true,
+                                .and_argument = 0,
+                                .and_value = fd,
+                        };
+                        bool allow = streq(*mode, "compound-allow");
+
+                        assert_se(filter);
+                        assert_se(fd >= 0);
+                        assert_se(other_fd >= 0);
+                        assert_se(proc_set_nnp() >= 0);
+                        if (allow)
+                                assert_se(hashmap_put(filter, INT_TO_PTR(SCMP_SYS(exit_group) + 1), INT_TO_PTR(-1)) >= 0);
+                        else
+                                assert_se(hashmap_put(filter, INT_TO_PTR(SCMP_SYS(ioctl) + 1), INT_TO_PTR(-1)) >= 0);
+                        assert_se(seccomp_load_syscall_filter_set_raw_with_argument_exceptions(
+                                          allow ? SCMP_ACT_ERRNO(EUCLEAN) : SCMP_ACT_ALLOW,
+                                          filter,
+                                          allow ? SCMP_ACT_ALLOW : SCMP_ACT_ERRNO(EUCLEAN),
+                                          true,
+                                          &compound_exception,
+                                          1) >= 0);
+
+                        assert_se(ioctl(fd, KVM_PT_ARM_EXEC, NULL) < 0);
+                        assert_se(errno == ENOTTY);
+                        assert_se(ioctl(other_fd, KVM_PT_ARM_EXEC, NULL) < 0);
+                        assert_se(errno == EUCLEAN);
+                        assert_se(ioctl(fd, KVM_GET_API_VERSION, 0) < 0);
+                        assert_se(errno == EUCLEAN);
+                        assert_se(ioctl(fd, KVM_PT_CANCEL_ARM, 0) < 0);
+                        assert_se(errno == EUCLEAN);
+                        _exit(EXIT_SUCCESS);
+                }
         }
 }
 
