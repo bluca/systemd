@@ -77,7 +77,7 @@ for phase in "${PHASES[@]}"; do
             sudo apt-get install -y -t "$UBUNTU_RELEASE-backports" lxc
             sudo apt-get install -y python3-debian git dpkg-dev fakeroot python3-jinja2
 
-            [ -d "$AUTOPKGTEST_DIR" ] || git clone --quiet --depth=1 https://salsa.debian.org/ci-team/autopkgtest.git "$AUTOPKGTEST_DIR"
+            [ -d "$AUTOPKGTEST_DIR" ] || git clone --quiet --depth=1 https://salsa.debian.org/bluca/autopkgtest.git -b revert_libeatmydata "$AUTOPKGTEST_DIR"
 
             create_container
         ;;
