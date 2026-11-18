@@ -64,10 +64,6 @@ jobs:
           - distro: debian
             release: stable
             rust: 1
-          - distro: debian
-            release: testing
-            shim: 1
-            rust: 1
           - distro: ubuntu
             release: resolute
             runner: ubuntu-24.04-arm
@@ -84,6 +80,7 @@ jobs:
             llvm: 1
           - distro: fedora
             release: rawhide
+            shim: 1
             rust: 1
           - distro: opensuse
             release: tumbleweed
@@ -206,7 +203,7 @@ jobs:
               --secure-boot \
               --enroll-cert mkosi/mkosi.crt \
               --add-mok 605dab50-e046-4300-abb6-3dd810dd8b23 mkosi/mkosi.crt \
-              --input /usr/share/OVMF/OVMF_VARS_4M.fd \
+              --input /usr/share/OVMF/OVMF_VARS.fd \
               --output build/mkosi.output/ovmf_vars_shim.fd
           fi
 
