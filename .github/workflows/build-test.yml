@@ -4,7 +4,7 @@
 #
 name: Build test
 on:
-  pull_request:
+  push:
     paths:
       - '**/meson.build'
       - '.github/workflows/*.cross'

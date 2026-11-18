@@ -4,9 +4,10 @@
 #
 name: Unit tests
 on:
-  pull_request:
+  push:
     branches:
       - main
+      - ci_fixes_wip
       - v[0-9]+-stable
     paths:
       - '**'
