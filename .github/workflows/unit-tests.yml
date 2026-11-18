@@ -8,6 +8,14 @@ on:
     branches:
       - main
       - v[0-9]+-stable
+    paths:
+      - '**'
+      - '!docs/**'
+      - '!man/**'
+      - '!.github/**'
+      - '.github/workflows/*.cross'
+      - '.github/workflows/requirements.txt'
+      - '.github/workflows/unit-tests.*'
 
 permissions:
   contents: read

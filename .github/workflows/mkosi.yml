@@ -39,7 +39,7 @@ on:
       - "!shell-completion/**"
       - "!po/**"
       - "!.**"
-      - ".github/**"
+      - ".github/workflows/mkosi.yml"
 
 permissions:
   contents: read

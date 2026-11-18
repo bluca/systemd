@@ -19,6 +19,10 @@ execution_time_limit:
 
 blocks:
   - name: "Setup & test"
+    run:
+      when: >-
+        change_in(['/src', '/man', '/meson*', '/**/meson*'],
+        {default_branch: 'main', pipeline_file: 'ignore', on_tags: false})
     task:
       jobs:
         - name: "Install dependencies & run the autopkgtest"
