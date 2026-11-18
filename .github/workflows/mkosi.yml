@@ -74,13 +74,13 @@ jobs:
             release: noble
           - distro: ubuntu
             release: resolute
+            shim: 1
           - distro: fedora
             release: "44"
             sanitizers: address,undefined
             llvm: 1
           - distro: fedora
             release: rawhide
-            shim: 1
             rust: 1
           - distro: opensuse
             release: tumbleweed
@@ -203,7 +203,7 @@ jobs:
               --secure-boot \
               --enroll-cert mkosi/mkosi.crt \
               --add-mok 605dab50-e046-4300-abb6-3dd810dd8b23 mkosi/mkosi.crt \
-              --input /usr/share/OVMF/OVMF_VARS.fd \
+              --input /usr/share/OVMF/OVMF_VARS_4M.fd \
               --output build/mkosi.output/ovmf_vars_shim.fd
           fi
 
