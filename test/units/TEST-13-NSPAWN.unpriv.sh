@@ -23,7 +23,8 @@ at_exit() {
     rm -rf /home/testuser/.local/state/machines/inodetest2 ||:
     rm -rf /home/testuser/.local/state/machines/mangletest ||:
     rm -rf /home/testuser/.local/state/machines/fdstore ||:
-    machinectl terminate zurps ||:
+    # Don't rely on the system instance's machine registration if the restart test failed.
+    systemctl --user --machine testuser@ stop systemd-nspawn@zurps.service ||:
     machinectl terminate exfiltrate ||:
     systemctl --user --machine testuser@ stop exfiltrate.service ||:
     systemctl --user --machine testuser@ stop systemd-nspawn@fdstore.service ||:
@@ -72,10 +73,31 @@ run0 -u testuser -i "echo -e \"[Exec]\nKillSignal=SIGKILL\n\" >.config/systemd/n
 run0 -u testuser systemctl start --user systemd-machined.socket
 run0 -u testuser systemctl start --user systemd-nspawn@zurps.service
 
+user_unit="user@$(id -u testuser).service"
+subgroup=machine.slice/systemd-nspawn@zurps.service/payload
 machinectl status zurps
 machinectl status zurps | grep "UID:" | grep "$(id -u testuser)"
-machinectl status zurps | grep "Unit: user@" | grep "$(id -u testuser)"
-machinectl status zurps | grep "Subgroup: machine.slice/systemd-nspawn@zurps.service/payload"
+machinectl status zurps | grep -F "Unit: $user_unit"
+machinectl status zurps | grep -F "Subgroup: $subgroup"
+
+# Restoring a machine in a subgroup must not make the enclosing user manager part of the machine.
+user_manager_pid=$(systemctl show -P MainPID "$user_unit")
+leader=$(machinectl show -P Leader zurps)
+assert_gt "$user_manager_pid" 0
+assert_gt "$leader" 0
+systemctl restart systemd-machined.service
+
+get_machine_by_pid() {
+    busctl call org.freedesktop.machine1 /org/freedesktop/machine1 \
+        org.freedesktop.machine1.Manager GetMachineByPID u "$1"
+}
+
+assert_eq "$(systemctl show -P MainPID "$user_unit")" "$user_manager_pid"
+assert_eq "$(get_machine_by_pid "$leader")" 'o "/org/freedesktop/machine1/machine/zurps"'
+run_and_grep "PID $user_manager_pid does not belong to any known machine" \
+    assert_fail get_machine_by_pid "$user_manager_pid"
+assert_eq "$(machinectl show -P Unit zurps)" "$user_unit"
+assert_eq "$(machinectl show -P Subgroup zurps)" "$subgroup"
 
 # The per-user machined refers to the unit in the user's service manager
 run0 -u testuser machinectl --user status zurps
